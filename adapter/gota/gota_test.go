@@ -11,15 +11,16 @@ import (
 func TestCandlesDataFrame(t *testing.T) {
 	df := Candles([]yfinance.Candle{
 		{
-			Time:      time.Unix(1700000000, 0).UTC(),
-			Open:      1,
-			High:      2,
-			Low:       0.5,
-			Close:     1.5,
-			AdjClose:  1.4,
-			Volume:    100,
-			Dividends: 0.1,
-			Split:     4,
+			Time:         time.Unix(1700000000, 0).UTC(),
+			Open:         1,
+			High:         2,
+			Low:          0.5,
+			Close:        1.5,
+			AdjClose:     1.4,
+			Volume:       100,
+			Dividends:    0.1,
+			CapitalGains: 0.2,
+			Split:        4,
 		},
 		{
 			Time:  time.Unix(1700086400, 0).UTC(),
@@ -30,12 +31,26 @@ func TestCandlesDataFrame(t *testing.T) {
 	if df.Nrow() != 2 {
 		t.Fatalf("Nrow = %d", df.Nrow())
 	}
-	wantColumns := []string{"Adj Close", "Close", "Dividends", "High", "Low", "Open", "Stock Splits", "Time", "Timestamp", "Volume"}
+	wantColumns := []string{"Adj Close", "Capital Gains", "Close", "Dividends", "High", "Low", "Open", "Stock Splits", "Time", "Timestamp", "Volume"}
 	if got := df.Names(); !sameStringSet(got, wantColumns) {
 		t.Fatalf("columns = %v", got)
 	}
 	if got := df.Col("Close").Float()[0]; got != 1.5 {
 		t.Fatalf("Close[0] = %v", got)
+	}
+}
+
+func TestActionsDataFrame(t *testing.T) {
+	df := Actions([]yfinance.Action{{
+		Time:  time.Unix(1700000000, 0).UTC(),
+		Type:  yfinance.ActionDividend,
+		Value: 0.24,
+	}})
+	if df.Nrow() != 1 {
+		t.Fatalf("Nrow = %d", df.Nrow())
+	}
+	if got := df.Col("Type").Records()[0]; got != "dividend" {
+		t.Fatalf("Type = %q", got)
 	}
 }
 
@@ -92,6 +107,34 @@ func TestRecordsStringifiesNestedValues(t *testing.T) {
 	}
 	if got := df.Col("nested").Records()[0]; got == "" {
 		t.Fatal("nested value should be stringified")
+	}
+}
+
+func TestTimeseriesDataFrame(t *testing.T) {
+	df := Timeseries(map[string]any{
+		"timeseries": map[string]any{
+			"result": []any{map[string]any{
+				"quarterlyNetIncome": []any{map[string]any{
+					"asOfDate":      "2023-09-30",
+					"reportedValue": map[string]any{"raw": 50.0},
+				}},
+				"annualTotalRevenue": []any{map[string]any{
+					"asOfDate":     "2023-12-31",
+					"periodType":   "12M",
+					"currencyCode": "USD",
+					"reportedValue": map[string]any{
+						"raw": 100.0,
+						"fmt": "100",
+					},
+				}},
+			}},
+		},
+	})
+	if df.Nrow() != 2 {
+		t.Fatalf("Nrow = %d", df.Nrow())
+	}
+	if got := df.Col("Type").Records()[0]; got != "annualTotalRevenue" {
+		t.Fatalf("Type = %q", got)
 	}
 }
 

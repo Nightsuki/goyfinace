@@ -57,11 +57,12 @@ func main() {
 - `Client.Search`: symbol lookup via Yahoo Finance search.
 - `Client.Options`: option chains for the default or requested expiration.
 - `Client.Financials`, `Client.Holders`, `Client.Recommendations`: convenience wrappers over quote-summary modules.
+- yfinance-compatible extras: `Actions`, `Dividends`, `Splits`, `CapitalGains`, `Quote`, `News`, `Calendar`, `SECFilings`, `Sustainability`, `Valuation`, `Analysis`, `UpgradesDowngrades`, `FundProfile`, `SharesFull`, statement timeseries, `Lookup`, `PredefinedScreen`, `Screen`, `MarketSummary`, `MarketStatus`, `Sector`, `Industry`, and `EarningsDates`.
 
 Detailed API documentation is available in English by default, with Chinese as a localized version:
 
 - English: [docs/API.md](docs/API.md)
-- 中文: [docs/API.zh.md](docs/API.zh.md)
+- Chinese: [docs/API.zh.md](docs/API.zh.md)
 
 ## Date Ranges
 
@@ -96,7 +97,7 @@ df := yfgota.History(history)
 fmt.Println(df.Nrow(), df.Col("Close").Float())
 ```
 
-The adapter currently supports history candles, option contracts/chains, search results, quote-summary modules, key/value maps, and generic records.
+The adapter currently supports history candles, corporate actions, option contracts/chains, search results, quote-summary modules, fundamentals timeseries, key/value maps, and generic records.
 
 ## Testing
 

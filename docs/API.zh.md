@@ -80,6 +80,8 @@ type Client struct {
 	HTTPClient *http.Client
 	Query1URL  string
 	Query2URL  string
+	RootURL    string
+	ISINURL    string
 	UserAgent  string
 }
 ```
@@ -91,6 +93,8 @@ type Client struct {
 | `HTTPClient` | 所有请求使用的 HTTP 客户端。可用于设置超时、代理、Transport、重试包装等。 |
 | `Query1URL` | Yahoo `query1.finance.yahoo.com` 的基础地址。测试或私有代理可覆盖。 |
 | `Query2URL` | Yahoo `query2.finance.yahoo.com` 的基础地址。测试或私有代理可覆盖。 |
+| `RootURL` | Yahoo Finance 前端 JSON 端点的基础地址，例如新闻接口。 |
+| `ISINURL` | 外部 best-effort ISIN suggestion 端点。Yahoo 没有稳定的 ISIN lookup，因此该地址与 Yahoo 端点分离。 |
 | `UserAgent` | 请求头中的 User-Agent。为空时使用包默认值。 |
 
 `Client` 可以复用。建议在应用初始化时创建一个客户端，在业务代码中共享。
@@ -752,8 +756,23 @@ client.Query2URL = "http://127.0.0.1:8080"
 - Go 版本不返回 DataFrame，而是返回结构体、切片和 map。
 - 可选 DataFrame 支持位于 `github.com/Nightsuki/goyfinace/adapter/gota`，但它不是完整 pandas 克隆。
 - `Info` 返回扁平化 map，但不保证字段集合固定。
-- `Financials` 等财务接口保留 Yahoo 原始模块结构，调用方可以按需要建模。
-- 暂未实现 Python 版本中的所有 scraping、repair、WebSocket 和 pandas 相关能力。
+- financial、screener、calendar、domain、analysis 等接口保留 Yahoo 原始模块/端点结构，调用方可以按需要建模。
+- Python 专属 scraping、`repair` 启发式修复、WebSocket streaming、pandas index/MultiIndex 行为未在根包中完整复刻。
+
+## yfinance 兼容功能面
+
+除核心 API 外，本包为主要 yfinance 功能家族提供 Go 原生入口：
+
+- 公司行为：`Actions`、`Dividends`、`Splits`、`CapitalGains`。
+- Quote 和 quote-summary 扩展：`Quote`、`Calendar`、`SECFilings`、`Sustainability`、`Valuation`。
+- 分析师数据：`Analysis`、`AnalystPriceTargets`、`UpgradesDowngrades`、`Recommendations`。
+- 基金和持仓：`FundProfile`、`Holders`。
+- 财务报表和股本：`FundamentalsTimeseries`、`IncomeStatement`、`BalanceSheet`、`CashFlow`、`SharesFull`。
+- 发现和筛选器：`Lookup`、`LookupISIN`、`Search`、`Screen`、`PredefinedScreen`。
+- 市场和 domain 数据：`MarketSummary`、`MarketStatus`、`Sector`、`Industry`。
+- 日历和新闻：`CalendarVisualization`、`EarningsDates`、`News`。
+
+当 Yahoo schema 较宽或不稳定时，这些方法会返回原始 `map[string]any` 或简单 records。需要表格表达时，可使用 `adapter/gota` 的 `QuoteSummary`、`KeyValues`、`Records`、`Actions`、`Timeseries` 等 helper。
 
 建议迁移方式：
 
@@ -777,7 +796,7 @@ github.com/Nightsuki/goyfinace
 安装指定版本：
 
 ```sh
-go get github.com/Nightsuki/goyfinace@v0.2.0
+go get github.com/Nightsuki/goyfinace@v0.3.0
 ```
 
 Go 文档发布后可在 pkg.go.dev 查看：

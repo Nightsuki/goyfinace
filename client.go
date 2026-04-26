@@ -1,6 +1,7 @@
 package yfinance
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -14,7 +15,10 @@ import (
 const (
 	defaultQuery1URL = "https://query1.finance.yahoo.com"
 	defaultQuery2URL = "https://query2.finance.yahoo.com"
+	defaultRootURL   = "https://finance.yahoo.com"
+	defaultISINURL   = "https://markets.businessinsider.com"
 	defaultUserAgent = "Mozilla/5.0 (compatible; goyfinace/0.1; +https://github.com/Nightsuki/goyfinace)"
+	maxTextBodyBytes = 2 << 20
 )
 
 // Client is a Yahoo Finance HTTP client.
@@ -26,6 +30,11 @@ type Client struct {
 	// Yahoo host. Leave empty for the default Yahoo endpoints.
 	Query1URL string
 	Query2URL string
+	// RootURL is used for Yahoo Finance frontend JSON endpoints.
+	RootURL string
+	// ISINURL is used only by the best-effort ISIN helper. Yahoo does not
+	// expose a stable ticker-to-ISIN endpoint, so this is intentionally separate.
+	ISINURL string
 	// UserAgent is sent on every request. Leave empty for the package default.
 	UserAgent string
 }
@@ -39,6 +48,8 @@ func NewClient(httpClient *http.Client) *Client {
 		HTTPClient: httpClient,
 		Query1URL:  defaultQuery1URL,
 		Query2URL:  defaultQuery2URL,
+		RootURL:    defaultRootURL,
+		ISINURL:    defaultISINURL,
 		UserAgent:  defaultUserAgent,
 	}
 }
@@ -62,6 +73,12 @@ func (c *Client) cloneWithDefaults() *Client {
 	if cp.Query2URL == "" {
 		cp.Query2URL = defaultQuery2URL
 	}
+	if cp.RootURL == "" {
+		cp.RootURL = defaultRootURL
+	}
+	if cp.ISINURL == "" {
+		cp.ISINURL = defaultISINURL
+	}
 	if cp.UserAgent == "" {
 		cp.UserAgent = defaultUserAgent
 	}
@@ -69,17 +86,72 @@ func (c *Client) cloneWithDefaults() *Client {
 }
 
 func (c *Client) getJSON(ctx context.Context, baseURL, path string, query url.Values, out any) error {
+	return c.doJSON(ctx, http.MethodGet, baseURL, path, query, nil, out)
+}
+
+func (c *Client) getText(ctx context.Context, baseURL, path string, query url.Values) (string, error) {
+	c = c.cloneWithDefaults()
+	endpoint, err := joinURL(baseURL, path, query)
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("User-Agent", c.UserAgent)
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusTooManyRequests {
+		io.Copy(io.Discard, resp.Body)
+		return "", ErrRateLimited
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return "", fmt.Errorf("yfinance: GET %s returned %s: %s", path, resp.Status, strings.TrimSpace(string(body)))
+	}
+	limited := io.LimitReader(resp.Body, maxTextBodyBytes+1)
+	body, err := io.ReadAll(limited)
+	if err != nil {
+		return "", err
+	}
+	if len(body) > maxTextBodyBytes {
+		return "", fmt.Errorf("yfinance: GET %s response exceeded %d bytes", path, maxTextBodyBytes)
+	}
+	return string(body), nil
+}
+
+func (c *Client) postJSON(ctx context.Context, baseURL, path string, query url.Values, body any, out any) error {
+	return c.doJSON(ctx, http.MethodPost, baseURL, path, query, body, out)
+}
+
+func (c *Client) doJSON(ctx context.Context, method, baseURL, path string, query url.Values, body any, out any) error {
 	c = c.cloneWithDefaults()
 	endpoint, err := joinURL(baseURL, path, query)
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	var reader io.Reader
+	if body != nil {
+		data, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		reader = bytes.NewReader(data)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, reader)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", c.UserAgent)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
@@ -93,7 +165,7 @@ func (c *Client) getJSON(ctx context.Context, baseURL, path string, query url.Va
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("yfinance: GET %s returned %s: %s", path, resp.Status, strings.TrimSpace(string(body)))
+		return fmt.Errorf("yfinance: %s %s returned %s: %s", method, path, resp.Status, strings.TrimSpace(string(body)))
 	}
 	dec := json.NewDecoder(resp.Body)
 	dec.UseNumber()

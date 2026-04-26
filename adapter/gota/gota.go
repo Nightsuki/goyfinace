@@ -28,16 +28,31 @@ func Candles(candles []yfinance.Candle) dataframe.DataFrame {
 	rows := make([]map[string]any, 0, len(candles))
 	for _, candle := range candles {
 		rows = append(rows, map[string]any{
-			"Time":         formatTime(candle.Time),
-			"Timestamp":    candle.Time.Unix(),
-			"Open":         finiteOrNaN(candle.Open),
-			"High":         finiteOrNaN(candle.High),
-			"Low":          finiteOrNaN(candle.Low),
-			"Close":        finiteOrNaN(candle.Close),
-			"Adj Close":    finiteOrNaN(candle.AdjClose),
-			"Volume":       candle.Volume,
-			"Dividends":    candle.Dividends,
-			"Stock Splits": candle.Split,
+			"Time":          formatTime(candle.Time),
+			"Timestamp":     candle.Time.Unix(),
+			"Open":          finiteOrNaN(candle.Open),
+			"High":          finiteOrNaN(candle.High),
+			"Low":           finiteOrNaN(candle.Low),
+			"Close":         finiteOrNaN(candle.Close),
+			"Adj Close":     finiteOrNaN(candle.AdjClose),
+			"Volume":        candle.Volume,
+			"Dividends":     candle.Dividends,
+			"Capital Gains": candle.CapitalGains,
+			"Stock Splits":  candle.Split,
+		})
+	}
+	return dataframe.LoadMaps(rows)
+}
+
+// Actions converts corporate actions into a DataFrame.
+func Actions(actions []yfinance.Action) dataframe.DataFrame {
+	rows := make([]map[string]any, 0, len(actions))
+	for _, action := range actions {
+		rows = append(rows, map[string]any{
+			"Time":      formatTime(action.Time),
+			"Timestamp": action.Time.Unix(),
+			"Type":      string(action.Type),
+			"Value":     action.Value,
 		})
 	}
 	return dataframe.LoadMaps(rows)
@@ -160,6 +175,45 @@ func Records(records []map[string]any) dataframe.DataFrame {
 	return dataframe.LoadMaps(rows)
 }
 
+// Timeseries converts Yahoo fundamentals timeseries result rows into a long
+// DataFrame with Type, Time, AsOfDate, PeriodType, Currency, and Value columns.
+func Timeseries(raw map[string]any) dataframe.DataFrame {
+	results := nestedSlice(raw, "timeseries", "result")
+	rows := make([]map[string]any, 0)
+	for _, item := range results {
+		obj, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, key := range sortedKeys(obj) {
+			if key == "meta" || key == "timestamp" {
+				continue
+			}
+			value := obj[key]
+			entries, ok := value.([]any)
+			if !ok {
+				continue
+			}
+			for _, entry := range entries {
+				row, ok := entry.(map[string]any)
+				if !ok {
+					continue
+				}
+				reported, _ := row["reportedValue"].(map[string]any)
+				rows = append(rows, map[string]any{
+					"Type":       key,
+					"Time":       scalarString(row["asOfDate"]),
+					"AsOfDate":   scalarString(row["asOfDate"]),
+					"PeriodType": scalarString(row["periodType"]),
+					"Currency":   scalarString(row["currencyCode"]),
+					"Value":      scalarValue(unwrapYahooValue(reported)),
+				})
+			}
+		}
+	}
+	return dataframe.LoadMaps(rows)
+}
+
 func sortedKeys(values map[string]any) []string {
 	keys := make([]string, 0, len(values))
 	for key := range values {
@@ -232,4 +286,17 @@ func formatTime(value time.Time) string {
 		return ""
 	}
 	return value.UTC().Format(time.RFC3339)
+}
+
+func nestedSlice(root any, path ...string) []any {
+	current := root
+	for _, key := range path {
+		obj, ok := current.(map[string]any)
+		if !ok {
+			return nil
+		}
+		current = obj[key]
+	}
+	values, _ := current.([]any)
+	return values
 }

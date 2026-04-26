@@ -77,6 +77,9 @@ type Candle struct {
 	// Dividends contains the dividend amount for this timestamp when Yahoo
 	// returns a dividend event.
 	Dividends float64
+	// CapitalGains contains the capital-gains distribution amount for this
+	// timestamp when Yahoo returns a capital-gains event.
+	CapitalGains float64
 	// Split is numerator/denominator for a split event at this timestamp. For
 	// example, a 4-for-1 split is represented as 4.
 	Split float64
@@ -192,6 +195,13 @@ func decodeChartResult(symbol string, result chartResult) *HistoryResult {
 			dividends[ts] = ev.Amount.Float64()
 		}
 	}
+	capitalGains := map[int64]float64{}
+	for key, ev := range result.Events.CapitalGains {
+		ts, err := strconv.ParseInt(key, 10, 64)
+		if err == nil {
+			capitalGains[ts] = ev.Amount.Float64()
+		}
+	}
 	splits := map[int64]float64{}
 	for key, ev := range result.Events.Splits {
 		ts, err := strconv.ParseInt(key, 10, 64)
@@ -208,15 +218,16 @@ func decodeChartResult(symbol string, result chartResult) *HistoryResult {
 			adjClose = closeValue
 		}
 		candles = append(candles, Candle{
-			Time:      time.Unix(ts, 0).UTC(),
-			Open:      numberAt(quotes.Open, i),
-			High:      numberAt(quotes.High, i),
-			Low:       numberAt(quotes.Low, i),
-			Close:     closeValue,
-			AdjClose:  adjClose,
-			Volume:    int64At(quotes.Volume, i),
-			Dividends: dividends[ts],
-			Split:     splits[ts],
+			Time:         time.Unix(ts, 0).UTC(),
+			Open:         numberAt(quotes.Open, i),
+			High:         numberAt(quotes.High, i),
+			Low:          numberAt(quotes.Low, i),
+			Close:        closeValue,
+			AdjClose:     adjClose,
+			Volume:       int64At(quotes.Volume, i),
+			Dividends:    dividends[ts],
+			CapitalGains: capitalGains[ts],
+			Split:        splits[ts],
 		})
 	}
 	return &HistoryResult{

@@ -1,6 +1,6 @@
 # goyfinace API Documentation
 
-中文版本: [API.zh.md](API.zh.md)
+Chinese localization: [API.zh.md](API.zh.md)
 
 This document describes the public API of `github.com/Nightsuki/goyfinace`: entry points, parameters, return values, and error handling. The package name is `yfinance`, so using an explicit import alias is recommended:
 
@@ -80,6 +80,8 @@ type Client struct {
 	HTTPClient *http.Client
 	Query1URL  string
 	Query2URL  string
+	RootURL    string
+	ISINURL    string
 	UserAgent  string
 }
 ```
@@ -89,6 +91,8 @@ type Client struct {
 | `HTTPClient` | HTTP client used for all requests. Use it for custom timeouts, proxies, transports, or retry wrappers. |
 | `Query1URL` | Base URL for `query1.finance.yahoo.com`. Override for tests or internal proxies. |
 | `Query2URL` | Base URL for `query2.finance.yahoo.com`. Override for tests or internal proxies. |
+| `RootURL` | Base URL for Yahoo Finance frontend JSON endpoints such as news. |
+| `ISINURL` | External best-effort ISIN suggestion endpoint. Keep separate from Yahoo endpoints because Yahoo does not expose stable ISIN lookup. |
 | `UserAgent` | User-Agent sent on each request. Empty uses the package default. |
 
 `Client` can be reused across requests. In most applications, create one client at startup and share it.
@@ -731,8 +735,23 @@ Main differences:
 - The Go package returns structs, slices, and maps instead of DataFrames.
 - Optional DataFrame support is available through `github.com/Nightsuki/goyfinace/adapter/gota`; it is not a full pandas clone.
 - `Info` returns a flattened map but does not promise a fixed field set.
-- Financial methods preserve Yahoo's raw module structure for caller-owned modeling.
-- Python-specific scraping, repair logic, WebSocket features, and pandas behavior are not fully implemented.
+- Financial, screener, calendar, domain, and analysis methods preserve Yahoo's raw module/endpoint structure for caller-owned modeling.
+- Python-specific scraping, `repair` heuristics, WebSocket streaming, and pandas index/MultiIndex behavior are not fully implemented in the root package.
+
+## yfinance Compatibility Surface
+
+Beyond the core APIs above, the package exposes Go-native equivalents for the main yfinance feature families:
+
+- Corporate actions: `Actions`, `Dividends`, `Splits`, `CapitalGains`.
+- Quote and quote-summary extras: `Quote`, `Calendar`, `SECFilings`, `Sustainability`, `Valuation`.
+- Analyst data: `Analysis`, `AnalystPriceTargets`, `UpgradesDowngrades`, `Recommendations`.
+- Funds and holders: `FundProfile`, `Holders`.
+- Financial statements and shares: `FundamentalsTimeseries`, `IncomeStatement`, `BalanceSheet`, `CashFlow`, `SharesFull`.
+- Discovery and screeners: `Lookup`, `LookupISIN`, `Search`, `Screen`, `PredefinedScreen`.
+- Market/domain data: `MarketSummary`, `MarketStatus`, `Sector`, `Industry`.
+- Calendars/news: `CalendarVisualization`, `EarningsDates`, `News`.
+
+These methods intentionally return raw `map[string]any` payloads or simple records when Yahoo's schema is broad or unstable. Use `adapter/gota` helpers such as `QuoteSummary`, `KeyValues`, `Records`, `Actions`, and `Timeseries` when you want a table representation.
 
 Migration examples:
 
@@ -756,7 +775,7 @@ github.com/Nightsuki/goyfinace
 Install a specific version:
 
 ```sh
-go get github.com/Nightsuki/goyfinace@v0.2.0
+go get github.com/Nightsuki/goyfinace@v0.3.0
 ```
 
 Go package documentation is available after pkg.go.dev indexes the module:

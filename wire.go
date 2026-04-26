@@ -72,6 +72,10 @@ type chartResult struct {
 			Amount jsonNumber `json:"amount"`
 			Date   int64      `json:"date"`
 		} `json:"dividends"`
+		CapitalGains map[string]struct {
+			Amount jsonNumber `json:"amount"`
+			Date   int64      `json:"date"`
+		} `json:"capitalGains"`
 		Splits map[string]struct {
 			Date        int64      `json:"date"`
 			Numerator   jsonNumber `json:"numerator"`
