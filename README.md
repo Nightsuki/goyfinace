@@ -57,7 +57,14 @@ func main() {
 - `Client.Search`: symbol lookup via Yahoo Finance search.
 - `Client.Options`: option chains for the default or requested expiration.
 - `Client.Financials`, `Client.Holders`, `Client.Recommendations`: convenience wrappers over quote-summary modules.
-- yfinance-compatible extras: `Actions`, `Dividends`, `Splits`, `CapitalGains`, `Quote`, `News`, `Calendar`, `SECFilings`, `Sustainability`, `Valuation`, `Analysis`, analyst estimates, holder/insider helpers, `FundProfile`, `SharesFull`, statement timeseries, `Lookup`, `PredefinedScreen`, `Screen`, screener query builders, `Market`, `Tickers`, `Calendars`, `MarketSummary`, `MarketStatus`, `Sector`, `Industry`, `EarningsDates`, and `WebSocket`.
+- yfinance-compatible extras: `Actions`, `Dividends`, `Splits`, `CapitalGains`, `Quote`, `News`, `Calendar`, `SECFilings`, `Sustainability`, `Valuation`, `Analysis`, analyst estimates, holder/insider helpers, `FundProfile`, `FundsData`, `SharesFull`, `Shares`, statement timeseries, `Lookup`, `PredefinedScreen`, `Screen`, screener query builders, `Market`, `Tickers`, `Calendars`, `MarketSummary`, `MarketStatus`, `Sector`, `Industry`, typed `SectorOf`/`IndustryOf` accessors, `EarningsDates`, and `WebSocket`.
+- Pricing adjustments: `HistoryParams.AutoAdjust`, `BackAdjust`, `Rounding`, and `Repair` mirror yfinance's `auto_adjust`/`back_adjust`/`rounding`/`repair` flags. `HistoryParams.Threads` bounds `Download` concurrency.
+- Cookie + crumb authentication: `Client.Authenticate(ctx)` primes the jar and crumb; subsequent calls to crumb-protected endpoints attach `crumb` automatically.
+- Reliability & observability: `Client.Logger` (slog), `Client.Retries` + `Client.RetryBackoff` (exponential backoff for 5xx/rate-limit/transient network errors), and `Client.Limiter` (`NewRateLimiter(rps, burst)` or any `golang.org/x/time/rate.Limiter`).
+- Download progress callbacks via `HistoryParams.OnProgress`; `HistoryParams.NoEvents` explicitly suppresses Yahoo events; `HistoryParams.DropNaN` drops all-NaN rows.
+- Advanced search via `Client.SearchWithOptions` exposing fuzzy / enhanced-trivial / private-company / region / lang flags.
+- Optional GET-JSON response cache: `Client.Cache` (`NewMemoryCache()` or any `Cache` implementation) with `Client.CacheTTL`.
+- Auto-reconnecting `WebSocket`: `AutoReconnect`, `ReconnectBackoff`, `MaxReconnectAttempts`, `OnReconnect` with transparent re-subscribe on reconnection.
 
 The default `UserAgent` mirrors the browser user-agent list used by upstream `yfinance`. Set `Client.UserAgent` when a fixed application-specific value is required.
 

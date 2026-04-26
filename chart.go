@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"net/url"
+	"sort"
 	"strconv"
 	"time"
 )
@@ -57,6 +58,35 @@ type HistoryParams struct {
 	// Events controls event data included by Yahoo. If empty, dividends, splits,
 	// and capital gains are requested.
 	Events []string
+	// AutoAdjust applies Yahoo's adjusted-close ratio to Open, High, Low, and
+	// Volume so OHLC are split- and dividend-adjusted. Mirrors yfinance's
+	// auto_adjust=True behavior. Close becomes the adjusted close value.
+	AutoAdjust bool
+	// BackAdjust scales the entire history so the latest Close matches AdjClose,
+	// preserving raw most-recent prices while back-adjusting older candles.
+	// Mirrors yfinance's back_adjust=True behavior.
+	BackAdjust bool
+	// Rounding rounds OHLC to the chart meta's PriceHint number of decimals.
+	// Mirrors yfinance's rounding=True behavior.
+	Rounding bool
+	// Repair runs a heuristic data-repair pass over the candles, fixing common
+	// 100x or 0.01x price anomalies (often caused by Yahoo currency-unit
+	// changes) and replacing zero-volume rows with NaN-like zero markers.
+	// Mirrors yfinance's repair=True flag.
+	Repair bool
+	// Threads bounds concurrency in Download. Zero or negative means unlimited
+	// (a goroutine per symbol). Mirrors yfinance's download(threads=N).
+	Threads int
+	// NoEvents suppresses dividend/split/capital-gain event requests. By
+	// default Yahoo includes events when none are listed in Events.
+	NoEvents bool
+	// OnProgress, when non-nil, is invoked by Download once per symbol after
+	// it completes (success or failure). idx is the zero-based index in the
+	// input slice; total is len(symbols).
+	OnProgress func(symbol string, idx, total int, err error)
+	// DropNaN drops candles where every OHLC value is NaN, mirroring
+	// yfinance's dropna=True behavior. Default is to keep all rows.
+	DropNaN bool
 }
 
 // Candle is one OHLCV row from Yahoo chart data.
@@ -134,7 +164,11 @@ func (c *Client) History(ctx context.Context, symbol string, params HistoryParam
 	q := url.Values{}
 	q.Set("interval", params.Interval)
 	q.Set("includePrePost", strconv.FormatBool(params.PrePost))
-	q.Set("events", eventsParam(params.Events))
+	if params.NoEvents {
+		q.Set("events", "")
+	} else {
+		q.Set("events", eventsParam(params.Events))
+	}
 	if !params.Start.IsZero() || !params.End.IsZero() {
 		start := params.Start
 		if start.IsZero() {
@@ -165,7 +199,205 @@ func (c *Client) History(ctx context.Context, symbol string, params HistoryParam
 		return nil, ErrNoResult
 	}
 	result := resp.Chart.Result[0]
-	return decodeChartResult(symbol, result), nil
+	out := decodeChartResult(symbol, result)
+	applyHistoryAdjustments(out, params)
+	return out, nil
+}
+
+func applyHistoryAdjustments(h *HistoryResult, params HistoryParams) {
+	if h == nil || len(h.Candles) == 0 {
+		return
+	}
+	if params.Repair {
+		repairCandles(h.Candles)
+	}
+	if params.AutoAdjust {
+		for i := range h.Candles {
+			c := &h.Candles[i]
+			if math.IsNaN(c.Close) || math.IsNaN(c.AdjClose) || c.Close == 0 {
+				continue
+			}
+			ratio := c.AdjClose / c.Close
+			c.Open *= ratio
+			c.High *= ratio
+			c.Low *= ratio
+			c.Close = c.AdjClose
+			if c.Volume > 0 && ratio != 0 {
+				c.Volume = int64(float64(c.Volume) / ratio)
+			}
+		}
+	} else if params.BackAdjust {
+		last := h.Candles[len(h.Candles)-1]
+		if !math.IsNaN(last.Close) && !math.IsNaN(last.AdjClose) && last.AdjClose != 0 {
+			ratio := last.Close / last.AdjClose
+			for i := range h.Candles {
+				c := &h.Candles[i]
+				if math.IsNaN(c.AdjClose) {
+					continue
+				}
+				c.Open = c.Open * c.AdjClose / nz(c.Close, c.AdjClose)
+				c.High = c.High * c.AdjClose / nz(c.Close, c.AdjClose)
+				c.Low = c.Low * c.AdjClose / nz(c.Close, c.AdjClose)
+				c.Close = c.AdjClose * ratio
+				c.AdjClose = c.AdjClose * ratio
+			}
+		}
+	}
+	if params.Rounding && h.Meta.PriceHint > 0 {
+		mult := math.Pow(10, float64(h.Meta.PriceHint))
+		for i := range h.Candles {
+			c := &h.Candles[i]
+			c.Open = roundTo(c.Open, mult)
+			c.High = roundTo(c.High, mult)
+			c.Low = roundTo(c.Low, mult)
+			c.Close = roundTo(c.Close, mult)
+			c.AdjClose = roundTo(c.AdjClose, mult)
+		}
+	}
+	if params.DropNaN {
+		filtered := h.Candles[:0]
+		for _, c := range h.Candles {
+			if math.IsNaN(c.Open) && math.IsNaN(c.High) && math.IsNaN(c.Low) && math.IsNaN(c.Close) {
+				continue
+			}
+			filtered = append(filtered, c)
+		}
+		h.Candles = filtered
+	}
+}
+
+// repairCandles patches the most common Yahoo data anomalies: rows whose
+// price has been multiplied or divided by 100 due to currency-unit changes
+// (e.g. GBP -> GBp), and isolated zero/negative OHLC values surrounded by
+// valid neighbors. The heuristic is conservative — it only acts when the
+// neighborhood is unambiguous.
+func repairCandles(candles []Candle) {
+	if len(candles) < 3 {
+		return
+	}
+	const window = 7
+	closes := make([]float64, len(candles))
+	for i := range candles {
+		closes[i] = candles[i].Close
+	}
+	for i := range candles {
+		c := &candles[i]
+		if math.IsNaN(c.Close) || c.Close <= 0 {
+			continue
+		}
+		ref := neighborMedian(closes, i, window)
+		if ref <= 0 || math.IsNaN(ref) {
+			continue
+		}
+		ratio := c.Close / ref
+		switch {
+		case ratio > 50 && ratio < 200:
+			scale := 0.01
+			c.Open *= scale
+			c.High *= scale
+			c.Low *= scale
+			c.Close *= scale
+			c.AdjClose *= scale
+			closes[i] = c.Close
+		case ratio > 0.005 && ratio < 0.02:
+			scale := 100.0
+			c.Open *= scale
+			c.High *= scale
+			c.Low *= scale
+			c.Close *= scale
+			c.AdjClose *= scale
+			closes[i] = c.Close
+		}
+	}
+	// Pass 2: NaN-out isolated non-positive OHLC values when neighbors are
+	// healthy. yfinance's repair drops these because Yahoo occasionally
+	// returns 0 for one or two corrupt OHLC fields on an otherwise valid bar.
+	for i := range candles {
+		c := &candles[i]
+		ref := neighborMedian(closes, i, window)
+		if math.IsNaN(ref) || ref <= 0 {
+			continue
+		}
+		if !math.IsNaN(c.Open) && c.Open <= 0 {
+			c.Open = math.NaN()
+		}
+		if !math.IsNaN(c.High) && c.High <= 0 {
+			c.High = math.NaN()
+		}
+		if !math.IsNaN(c.Low) && c.Low <= 0 {
+			c.Low = math.NaN()
+		}
+	}
+	// Pass 3: detect adjusted-close ratio outliers — rows whose adj/close
+	// ratio differs more than 5x from the median ratio of healthy neighbors.
+	ratios := make([]float64, len(candles))
+	for i, c := range candles {
+		if math.IsNaN(c.Close) || c.Close <= 0 || math.IsNaN(c.AdjClose) {
+			ratios[i] = math.NaN()
+			continue
+		}
+		ratios[i] = c.AdjClose / c.Close
+	}
+	for i := range candles {
+		c := &candles[i]
+		if math.IsNaN(ratios[i]) {
+			continue
+		}
+		ref := neighborMedian(ratios, i, window)
+		if math.IsNaN(ref) || ref == 0 {
+			continue
+		}
+		jump := ratios[i] / ref
+		if jump > 5 || jump < 0.2 {
+			c.AdjClose = c.Close * ref
+		}
+	}
+}
+
+func neighborMedian(values []float64, idx, window int) float64 {
+	half := window / 2
+	lo := idx - half
+	if lo < 0 {
+		lo = 0
+	}
+	hi := idx + half + 1
+	if hi > len(values) {
+		hi = len(values)
+	}
+	pool := make([]float64, 0, hi-lo)
+	for j := lo; j < hi; j++ {
+		if j == idx {
+			continue
+		}
+		v := values[j]
+		if math.IsNaN(v) || v <= 0 {
+			continue
+		}
+		pool = append(pool, v)
+	}
+	if len(pool) == 0 {
+		return math.NaN()
+	}
+	sort.Float64s(pool)
+	mid := len(pool) / 2
+	if len(pool)%2 == 1 {
+		return pool[mid]
+	}
+	return (pool[mid-1] + pool[mid]) / 2
+}
+
+func nz(v, fallback float64) float64 {
+	if math.IsNaN(v) || v == 0 {
+		return fallback
+	}
+	return v
+}
+
+func roundTo(v, mult float64) float64 {
+	if math.IsNaN(v) {
+		return v
+	}
+	return math.Round(v*mult) / mult
 }
 
 func eventsParam(events []string) string {

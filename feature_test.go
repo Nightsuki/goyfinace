@@ -4,9 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
+	"math"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -410,6 +414,676 @@ func TestISINRejectsAmbiguousSuggestion(t *testing.T) {
 	client.ISINURL = server.URL
 	if _, err := client.ISIN(context.Background(), "aapl"); !errors.Is(err, ErrNoResult) {
 		t.Fatalf("ISIN error = %v, want ErrNoResult", err)
+	}
+}
+
+func TestHistoryAutoAdjustAndRounding(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{
+			"chart": map[string]any{
+				"result": []any{map[string]any{
+					"meta": map[string]any{
+						"symbol":    "AAPL",
+						"priceHint": 2,
+					},
+					"timestamp": []int64{1700000000, 1700086400},
+					"indicators": map[string]any{
+						"quote": []any{map[string]any{
+							"open":   []any{100.0, 110.0},
+							"high":   []any{105.0, 115.0},
+							"low":    []any{95.0, 108.0},
+							"close":  []any{100.0, 110.0},
+							"volume": []any{1000, 2000},
+						}},
+						"adjclose": []any{map[string]any{"adjclose": []any{50.0, 110.0}}},
+					},
+				}},
+				"error": nil,
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := NewClient(server.Client())
+	client.Query1URL = server.URL
+	result, err := client.Ticker("AAPL").History(context.Background(), HistoryParams{
+		Period:     Period5D,
+		AutoAdjust: true,
+		Rounding:   true,
+	})
+	if err != nil {
+		t.Fatalf("History returned error: %v", err)
+	}
+	first := result.Candles[0]
+	if first.Close != 50.0 {
+		t.Fatalf("auto-adjusted close = %v, want 50", first.Close)
+	}
+	if first.Open != 50.0 || first.High != 52.5 || first.Low != 47.5 {
+		t.Fatalf("auto-adjusted OHL = %v/%v/%v", first.Open, first.High, first.Low)
+	}
+	if first.Volume != 2000 {
+		t.Fatalf("auto-adjusted volume = %v, want 2000", first.Volume)
+	}
+	second := result.Candles[1]
+	if second.Open != 110.0 || second.Close != 110.0 {
+		t.Fatalf("ratio-1 candle changed unexpectedly: %+v", second)
+	}
+}
+
+func TestSectorIndustryTypedAccessors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/finance/sectors/technology":
+			writeJSON(t, w, map[string]any{
+				"data": map[string]any{
+					"overview": map[string]any{
+						"name":           "Technology",
+						"marketCap":      1.0,
+						"companiesCount": 500,
+					},
+					"topCompanies": []any{
+						map[string]any{"symbol": "AAPL"},
+						map[string]any{"symbol": "MSFT"},
+					},
+					"topETFs": []any{
+						map[string]any{"symbol": "XLK"},
+					},
+					"topMutualFunds": []any{
+						map[string]any{"symbol": "VITAX"},
+					},
+					"industries": []any{
+						map[string]any{"key": "software-application"},
+					},
+					"topGrowthCompanies":     []any{map[string]any{"symbol": "NVDA"}},
+					"topPerformingCompanies": []any{map[string]any{"symbol": "AVGO"}},
+				},
+			})
+		case "/v1/finance/industries/software-application":
+			writeJSON(t, w, map[string]any{
+				"data": map[string]any{
+					"overview": map[string]any{
+						"name":       "Software—Application",
+						"sectorKey":  "technology",
+						"sectorName": "Technology",
+					},
+					"topPerformingCompanies": []any{map[string]any{"symbol": "ADBE"}},
+					"topGrowthCompanies":     []any{map[string]any{"symbol": "CRM"}},
+					"keyCompanyKeys":         []any{"ADBE", "CRM"},
+					"keyCompanyGroups": []any{
+						map[string]any{"name": "Leaders", "keys": []any{"ADBE", "CRM"}},
+					},
+				},
+			})
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(server.Client())
+	client.Query1URL = server.URL
+
+	sec, err := client.SectorOf(context.Background(), "technology")
+	if err != nil {
+		t.Fatalf("SectorOf: %v", err)
+	}
+	if sec.Name != "Technology" {
+		t.Fatalf("Sector.Name = %q", sec.Name)
+	}
+	if got := sec.TopCompanies(); len(got) != 2 || stringValue(got[0]["symbol"]) != "AAPL" {
+		t.Fatalf("TopCompanies = %+v", got)
+	}
+	if got := sec.TopETFs(); len(got) != 1 || stringValue(got[0]["symbol"]) != "XLK" {
+		t.Fatalf("TopETFs = %+v", got)
+	}
+	if got := sec.TopMutualFunds(); len(got) != 1 {
+		t.Fatalf("TopMutualFunds len = %d", len(got))
+	}
+	if got := sec.Industries(); len(got) != 1 {
+		t.Fatalf("Industries len = %d", len(got))
+	}
+	if got := sec.TopGrowthCompanies(); len(got) != 1 {
+		t.Fatalf("TopGrowthCompanies len = %d", len(got))
+	}
+	if got := sec.TopPerformingCompanies(); len(got) != 1 {
+		t.Fatalf("TopPerformingCompanies len = %d", len(got))
+	}
+	if sec.Overview() == nil {
+		t.Fatalf("Overview was nil")
+	}
+
+	ind, err := client.IndustryOf(context.Background(), "software-application")
+	if err != nil {
+		t.Fatalf("IndustryOf: %v", err)
+	}
+	if ind.SectorKey != "technology" {
+		t.Fatalf("Industry.SectorKey = %q", ind.SectorKey)
+	}
+	if got := ind.KeyCompanyKeys(); len(got) != 2 || got[0] != "ADBE" {
+		t.Fatalf("KeyCompanyKeys = %+v", got)
+	}
+	if got := ind.KeyCompanyGroups(); len(got) != 1 {
+		t.Fatalf("KeyCompanyGroups len = %d", len(got))
+	}
+	if got := ind.TopPerformingCompanies(); len(got) != 1 {
+		t.Fatalf("Industry.TopPerformingCompanies len = %d", len(got))
+	}
+}
+
+func TestFundsDataTypedAccessors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{
+			"quoteSummary": map[string]any{
+				"result": []any{map[string]any{
+					"summaryProfile": map[string]any{
+						"longBusinessSummary": "An ETF that tracks the technology sector.",
+					},
+					"fundProfile": map[string]any{
+						"family":                  "Vanguard",
+						"categoryName":            "Technology",
+						"legalType":               "Exchange Traded Fund",
+						"feesExpensesInvestment": map[string]any{"annualReportExpenseRatio": 0.001},
+					},
+					"topHoldings": map[string]any{
+						"cashPosition":  0.01,
+						"stockPosition": 0.99,
+						"bondPosition":  0,
+						"holdings": []any{
+							map[string]any{"symbol": "AAPL", "holdingPercent": 0.18},
+						},
+						"equityHoldings":   map[string]any{"priceToBook": 8.0},
+						"bondHoldings":     map[string]any{"duration": 0.0},
+						"bondRatings":      []any{map[string]any{"a": 0.5}},
+						"sectorWeightings": []any{map[string]any{"technology": 0.99}},
+					},
+				}},
+				"error": nil,
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := NewClient(server.Client())
+	client.Query2URL = server.URL
+	fd, err := client.FundsData(context.Background(), "VGT")
+	if err != nil {
+		t.Fatalf("FundsData: %v", err)
+	}
+	if fd.Symbol != "VGT" {
+		t.Fatalf("Symbol = %q", fd.Symbol)
+	}
+	if !strings.Contains(fd.Description(), "technology sector") {
+		t.Fatalf("Description = %q", fd.Description())
+	}
+	if ov := fd.FundOverview(); ov == nil || ov["family"] != "Vanguard" {
+		t.Fatalf("FundOverview = %+v", ov)
+	}
+	if ops := fd.FundOperations(); ops == nil {
+		t.Fatalf("FundOperations was nil")
+	}
+	if ac := fd.AssetClasses(); ac == nil || ac["stockPosition"] == nil {
+		t.Fatalf("AssetClasses = %+v", ac)
+	}
+	if h := fd.TopHoldings(); len(h) != 1 {
+		t.Fatalf("TopHoldings len = %d", len(h))
+	}
+	if fd.EquityHoldings() == nil {
+		t.Fatalf("EquityHoldings nil")
+	}
+	if fd.BondHoldings() == nil {
+		t.Fatalf("BondHoldings nil")
+	}
+	if len(fd.BondRatings()) != 1 || len(fd.SectorWeightings()) != 1 {
+		t.Fatalf("BondRatings/SectorWeightings empty")
+	}
+}
+
+func TestSearchRichAccessors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{
+			"quotes": []any{
+				map[string]any{"symbol": "AAPL", "shortname": "Apple Inc."},
+			},
+			"news": []any{
+				map[string]any{"title": "Apple earnings"},
+			},
+			"lists": []any{
+				map[string]any{"slug": "most-active"},
+			},
+			"researchReports": []any{
+				map[string]any{"title": "Apple research"},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := NewClient(server.Client())
+	client.Query1URL = server.URL
+	resp, err := client.Search(context.Background(), "apple", 1, 1)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if got := resp.Lists(); len(got) != 1 || stringValue(got[0]["slug"]) != "most-active" {
+		t.Fatalf("Lists = %+v", got)
+	}
+	if got := resp.Research(); len(got) != 1 {
+		t.Fatalf("Research len = %d", len(got))
+	}
+	if got := resp.NewsRows(); len(got) != 1 {
+		t.Fatalf("NewsRows len = %d", len(got))
+	}
+	all := resp.All()
+	if all["quotes"] == nil || all["lists"] == nil || all["researchReports"] == nil {
+		t.Fatalf("All() missing sections: %+v", all)
+	}
+}
+
+func TestHistoryRepairFixesCentupleAnomaly(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{
+			"chart": map[string]any{
+				"result": []any{map[string]any{
+					"meta": map[string]any{"symbol": "VOD.L"},
+					"timestamp": []int64{
+						1700000000, 1700086400, 1700172800, 1700259200,
+						1700345600, 1700432000, 1700518400,
+					},
+					"indicators": map[string]any{
+						"quote": []any{map[string]any{
+							"open":   []any{1.05, 1.06, 105.0, 1.07, 1.08, 1.09, 1.10},
+							"high":   []any{1.10, 1.11, 110.0, 1.12, 1.13, 1.14, 1.15},
+							"low":    []any{1.00, 1.01, 100.0, 1.02, 1.03, 1.04, 1.05},
+							"close":  []any{1.05, 1.06, 106.0, 1.07, 1.08, 1.09, 1.10},
+							"volume": []any{1000, 1000, 1000, 1000, 1000, 1000, 1000},
+						}},
+						"adjclose": []any{map[string]any{"adjclose": []any{1.05, 1.06, 106.0, 1.07, 1.08, 1.09, 1.10}}},
+					},
+				}},
+				"error": nil,
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := NewClient(server.Client())
+	client.Query1URL = server.URL
+	result, err := client.Ticker("VOD.L").History(context.Background(), HistoryParams{
+		Period: Period5D,
+		Repair: true,
+	})
+	if err != nil {
+		t.Fatalf("History returned error: %v", err)
+	}
+	bad := result.Candles[2]
+	if bad.Close > 2 {
+		t.Fatalf("repair did not normalize 100x close: %v", bad.Close)
+	}
+	if bad.Open > 2 || bad.High > 2 || bad.Low > 2 {
+		t.Fatalf("repair did not normalize 100x OHL: %+v", bad)
+	}
+}
+
+func TestDownloadHonorsThreadsLimit(t *testing.T) {
+	var (
+		mu      sync.Mutex
+		current int
+		peak    int
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		current++
+		if current > peak {
+			peak = current
+		}
+		mu.Unlock()
+		time.Sleep(20 * time.Millisecond)
+		mu.Lock()
+		current--
+		mu.Unlock()
+		writeEmptyChart(t, w)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.Client())
+	client.Query1URL = server.URL
+	results := client.Download(context.Background(),
+		[]string{"A", "B", "C", "D", "E", "F", "G", "H"},
+		HistoryParams{Period: Period5D, Threads: 2})
+	if len(results) != 8 {
+		t.Fatalf("got %d results", len(results))
+	}
+	if peak > 2 {
+		t.Fatalf("peak in-flight = %d, want <= 2", peak)
+	}
+}
+
+func TestSharesQuarterlyTimeseries(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("type"); !strings.Contains(got, "quarterlyShareIssued") {
+			t.Fatalf("type = %q", got)
+		}
+		writeJSON(t, w, map[string]any{"timeseries": map[string]any{"result": []any{}}})
+	}))
+	defer server.Close()
+
+	client := NewClient(server.Client())
+	client.Query2URL = server.URL
+	if _, err := client.Ticker("AAPL").Shares(context.Background(), "quarterly"); err != nil {
+		t.Fatalf("Shares: %v", err)
+	}
+}
+
+func TestAuthenticateSetsCrumbFromGetCrumb(t *testing.T) {
+	var (
+		homeHits  int
+		crumbHits int
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			homeHits++
+			http.SetCookie(w, &http.Cookie{Name: "A1", Value: "test"})
+			w.Write([]byte("ok"))
+		case "/v1/test/getcrumb":
+			crumbHits++
+			w.Write([]byte("FAKE-CRUMB"))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(nil)
+	client.RootURL = server.URL
+	client.Query2URL = server.URL
+	client.HTTPClient = server.Client()
+	if client.HTTPClient.Jar == nil {
+		jar, _ := cookiejar.New(nil)
+		client.HTTPClient.Jar = jar
+	}
+
+	if err := client.Authenticate(context.Background()); err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if client.Crumb != "FAKE-CRUMB" {
+		t.Fatalf("Crumb = %q", client.Crumb)
+	}
+	if homeHits == 0 || crumbHits == 0 {
+		t.Fatalf("expected both home and crumb hits, got %d/%d", homeHits, crumbHits)
+	}
+}
+
+func TestRetryOnTransient5xx(t *testing.T) {
+	var hits int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		if hits < 3 {
+			http.Error(w, "boom", http.StatusInternalServerError)
+			return
+		}
+		writeEmptyChart(t, w)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.Client())
+	client.Query1URL = server.URL
+	client.Retries = 3
+	client.RetryBackoff = time.Millisecond
+	if _, err := client.Ticker("A").History(context.Background(), HistoryParams{Period: Period5D}); err != nil {
+		t.Fatalf("History after retry: %v", err)
+	}
+	if hits != 3 {
+		t.Fatalf("expected 3 attempts, got %d", hits)
+	}
+}
+
+func TestRetryGivesUpOnNonRetryable(t *testing.T) {
+	var hits int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		http.Error(w, "bad", http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.Client())
+	client.Query1URL = server.URL
+	client.Retries = 5
+	client.RetryBackoff = time.Microsecond
+	if _, err := client.Ticker("A").History(context.Background(), HistoryParams{Period: Period5D}); err == nil {
+		t.Fatalf("expected error for 400")
+	}
+	if hits != 1 {
+		t.Fatalf("expected exactly 1 attempt for 400, got %d", hits)
+	}
+}
+
+func TestLoggerEmitsRequestAndResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeEmptyChart(t, w)
+	}))
+	defer server.Close()
+
+	var buf strings.Builder
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	client := NewClient(server.Client())
+	client.Query1URL = server.URL
+	client.Logger = logger
+	if _, err := client.Ticker("A").History(context.Background(), HistoryParams{Period: Period5D}); err != nil {
+		t.Fatalf("History: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "yfinance request") || !strings.Contains(out, "yfinance response") {
+		t.Fatalf("logger output missing request/response: %s", out)
+	}
+}
+
+func TestRateLimiterGatesRequests(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeEmptyChart(t, w)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.Client())
+	client.Query1URL = server.URL
+	client.Limiter = NewRateLimiter(20, 1)
+
+	start := time.Now()
+	for i := 0; i < 4; i++ {
+		if _, err := client.Ticker("A").History(context.Background(), HistoryParams{Period: Period5D}); err != nil {
+			t.Fatalf("History: %v", err)
+		}
+	}
+	elapsed := time.Since(start)
+	if elapsed < 100*time.Millisecond {
+		t.Fatalf("rate limiter did not gate; elapsed = %v", elapsed)
+	}
+}
+
+func TestHistoryNoEventsSendsEmptyParam(t *testing.T) {
+	var captured string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured = r.URL.Query().Get("events")
+		writeEmptyChart(t, w)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.Client())
+	client.Query1URL = server.URL
+	if _, err := client.Ticker("A").History(context.Background(), HistoryParams{Period: Period5D, NoEvents: true}); err != nil {
+		t.Fatalf("History: %v", err)
+	}
+	if captured != "" {
+		t.Fatalf("events = %q, want empty", captured)
+	}
+}
+
+func TestDownloadOnProgressCalledForEachSymbol(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeEmptyChart(t, w)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.Client())
+	client.Query1URL = server.URL
+
+	var (
+		mu     sync.Mutex
+		seen   []string
+		errors []error
+	)
+	results := client.Download(context.Background(),
+		[]string{"A", "B", "C"},
+		HistoryParams{Period: Period5D, OnProgress: func(sym string, idx, total int, err error) {
+			mu.Lock()
+			seen = append(seen, sym)
+			errors = append(errors, err)
+			mu.Unlock()
+			if total != 3 {
+				t.Errorf("total = %d, want 3", total)
+			}
+		}})
+	if len(results) != 3 {
+		t.Fatalf("got %d results", len(results))
+	}
+	if len(seen) != 3 {
+		t.Fatalf("OnProgress called %d times, want 3", len(seen))
+	}
+	for _, e := range errors {
+		if e != nil {
+			t.Fatalf("unexpected progress error: %v", e)
+		}
+	}
+}
+
+func TestHistoryDropNaNFiltersAllNaNRows(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{
+			"chart": map[string]any{
+				"result": []any{map[string]any{
+					"meta":      map[string]any{"symbol": "X"},
+					"timestamp": []int64{1, 2, 3},
+					"indicators": map[string]any{
+						"quote": []any{map[string]any{
+							"open":   []any{1.0, nil, 3.0},
+							"high":   []any{1.0, nil, 3.0},
+							"low":    []any{1.0, nil, 3.0},
+							"close":  []any{1.0, nil, 3.0},
+							"volume": []any{10, 0, 30},
+						}},
+						"adjclose": []any{map[string]any{"adjclose": []any{1.0, nil, 3.0}}},
+					},
+				}},
+				"error": nil,
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := NewClient(server.Client())
+	client.Query1URL = server.URL
+	result, err := client.Ticker("X").History(context.Background(), HistoryParams{
+		Period:  Period5D,
+		DropNaN: true,
+	})
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+	if len(result.Candles) != 2 {
+		t.Fatalf("expected 2 rows after DropNaN, got %d", len(result.Candles))
+	}
+}
+
+func TestRepairNaNsZeroOHLCWithHealthyNeighbors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{
+			"chart": map[string]any{
+				"result": []any{map[string]any{
+					"meta": map[string]any{"symbol": "X"},
+					"timestamp": []int64{
+						1, 2, 3, 4, 5, 6, 7,
+					},
+					"indicators": map[string]any{
+						"quote": []any{map[string]any{
+							"open":   []any{1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0},
+							"high":   []any{1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0},
+							"low":    []any{1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0},
+							"close":  []any{1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0},
+							"volume": []any{10, 10, 10, 10, 10, 10, 10},
+						}},
+						"adjclose": []any{map[string]any{"adjclose": []any{1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0}}},
+					},
+				}},
+				"error": nil,
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := NewClient(server.Client())
+	client.Query1URL = server.URL
+	result, err := client.Ticker("X").History(context.Background(), HistoryParams{
+		Period: Period5D,
+		Repair: true,
+	})
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+	bad := result.Candles[2]
+	if !math.IsNaN(bad.Open) {
+		t.Fatalf("expected zero Open to be NaN'd, got %v", bad.Open)
+	}
+}
+
+func TestSearchWithOptionsForwardsFlags(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got := r.URL.Query()
+		if got.Get("enableFuzzyQuery") != "true" {
+			t.Fatalf("enableFuzzyQuery = %q", got.Get("enableFuzzyQuery"))
+		}
+		if got.Get("recommendCount") != "5" {
+			t.Fatalf("recommendCount = %q", got.Get("recommendCount"))
+		}
+		if got.Get("region") != "GB" {
+			t.Fatalf("region = %q", got.Get("region"))
+		}
+		writeJSON(t, w, map[string]any{"quotes": []any{}, "news": []any{}})
+	}))
+	defer server.Close()
+
+	client := NewClient(server.Client())
+	client.Query1URL = server.URL
+	yes := true
+	if _, err := client.SearchWithOptions(context.Background(), "apple", SearchOptions{
+		QuotesCount:      5,
+		EnableFuzzyQuery: &yes,
+		RecommendCount:   5,
+		Region:           "GB",
+	}); err != nil {
+		t.Fatalf("SearchWithOptions: %v", err)
+	}
+}
+
+func TestMemoryCacheSavesAndServesGetJSON(t *testing.T) {
+	var hits int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		writeEmptyChart(t, w)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.Client())
+	client.Query1URL = server.URL
+	client.Cache = NewMemoryCache()
+	client.CacheTTL = time.Minute
+
+	for i := 0; i < 3; i++ {
+		if _, err := client.Ticker("A").History(context.Background(), HistoryParams{Period: Period5D}); err != nil {
+			t.Fatalf("History: %v", err)
+		}
+	}
+	if hits != 1 {
+		t.Fatalf("server hits = %d, want 1 with cache", hits)
 	}
 }
 

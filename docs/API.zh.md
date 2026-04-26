@@ -130,12 +130,17 @@ func (t *Ticker) History(ctx context.Context, params HistoryParams) (*HistoryRes
 
 ```go
 type HistoryParams struct {
-	Period   string
-	Interval string
-	Start    time.Time
-	End      time.Time
-	PrePost  bool
-	Events   []string
+	Period     string
+	Interval   string
+	Start      time.Time
+	End        time.Time
+	PrePost    bool
+	Events     []string
+	AutoAdjust bool
+	BackAdjust bool
+	Rounding   bool
+	Repair     bool
+	Threads    int
 }
 ```
 
@@ -149,6 +154,14 @@ type HistoryParams struct {
 | `End` | 显式时间范围结束，不包含该时间。`Start` 非空且 `End` 为空时使用当前时间。 |
 | `PrePost` | 是否请求盘前盘后数据。仅在 Yahoo 对该标的和周期支持时有效。 |
 | `Events` | 请求的事件类型。为空时请求 `div`、`splits`、`capitalGains`。 |
+| `AutoAdjust` | 使用 `AdjClose/Close` 比例对 OHLC 进行除权/除息调整，并反向调整 Volume。对应 yfinance 的 `auto_adjust=True`。 |
+| `BackAdjust` | 反向调整历史 K 线，使最近一根 Close 等于 AdjClose，保持最新原始价格不变。对应 yfinance 的 `back_adjust=True`。 |
+| `Rounding` | 按照图表元数据中的 `PriceHint` 对 OHLC 进行四舍五入。对应 yfinance 的 `rounding=True`。 |
+| `Repair` | 通过对比 Close 与邻域中位数，自动修复 100 倍/百分之一倍的脏数据（多由货币单位变化导致）。对应 yfinance 的 `repair=True`。 |
+| `Threads` | 限制 `Download` 的并发数；零或负值表示无上限。`History` 不使用此字段。对应 yfinance 的 `download(threads=N)`。 |
+| `NoEvents` | 显式禁用 dividend/split/capital-gain 事件。默认情况下 Yahoo 会附带事件。 |
+| `OnProgress` | 可选回调 `func(symbol, idx, total int, err error)`，由 `Download` 在每个 symbol 处理完后调用，对应 yfinance 的 tqdm 进度回调。 |
+| `DropNaN` | 丢弃所有 OHLC 全为 NaN 的 K 线。对应 yfinance 的 `dropna=True`。 |
 
 ### Period 常量
 
@@ -837,11 +850,11 @@ client.Query2URL = "http://127.0.0.1:8080"
 - 公司行为：`Actions`、`Dividends`、`Splits`、`CapitalGains`。
 - Quote 和 quote-summary 扩展：`Quote`、`Calendar`、`SECFilings`、`Sustainability`、`Valuation`。
 - 分析师数据：`Analysis`、`AnalystPriceTargets`、`UpgradesDowngrades`、`Recommendations`。
-- 基金和持仓：`FundProfile`、`Holders`。
+- 基金和持仓：`FundProfile`、`FundsData`、`Holders`。
 - 财务报表和股本：`FundamentalsTimeseries`、`IncomeStatement`、`BalanceSheet`、`CashFlow`、`SharesFull`。
 - 估值、持仓和 insider：`EarningsEstimate`、`RevenueEstimate`、`EarningsHistory`、`EPSRevisions`、`EPSTrend`、`GrowthEstimates`、`RecommendationsSummary`、`MajorHolders`、`InstitutionalHolders`、`MutualFundHolders`、`InsiderPurchases`、`InsiderTransactions`、`InsiderRosterHolders`。
 - 发现和筛选器：`Lookup`、`LookupISIN`、`Search`、`Screen`、`PredefinedScreen`、`EquityQuery`、`FundQuery`、`ETFQuery`。
-- 市场和 domain 数据：`Market`、`MarketSummary`、`MarketStatus`、`Sector`、`Industry`。
+- 市场和 domain 数据：`Market`、`MarketSummary`、`MarketStatus`、`Sector`、`Industry`、`SectorOf`、`IndustryOf`。
 - 日历和新闻：`CalendarVisualization`、`EarningsDates`、`News`。
 - 多标的和流式行情：`Tickers`、`WebSocket`、`AsyncWebSocket`。
 
@@ -859,6 +872,193 @@ client.Query2URL = "http://127.0.0.1:8080"
 | `ticker.option_chain(...)` | `ticker.Options(ctx, expiration)` |
 | `ticker.financials` | `ticker.Financials(ctx)` |
 | `yf.WebSocket(...)` | `yfinance.NewWebSocket(url)` |
+| `yf.Sector("technology").top_companies` | `client.SectorOf(ctx, "technology").TopCompanies()` |
+| `yf.Industry("software-application").top_growth_companies` | `client.IndustryOf(ctx, "software-application").TopGrowthCompanies()` |
+| `ticker.funds_data.top_holdings` | `ticker.FundsData(ctx).TopHoldings()` |
+| `Search(...).lists` | `client.Search(ctx, q, n, m).Lists()` |
+| `ticker.history(auto_adjust=True)` | `ticker.History(ctx, HistoryParams{AutoAdjust: true})` |
+
+## 类型化领域访问器
+
+除原始的 `Sector`/`Industry`/`FundProfile` map 接口外，本包还提供与 yfinance 中 `Sector`、`Industry`、`FundsData` 类属性一一对应的类型化封装。
+
+### SectorOf / IndustryOf
+
+```go
+sector, err := client.SectorOf(ctx, "technology")
+if err != nil {
+    return err
+}
+
+fmt.Println(sector.Name)
+fmt.Println(sector.Overview())
+for _, row := range sector.TopCompanies() { /* ... */ }
+sector.TopETFs()
+sector.TopMutualFunds()
+sector.Industries()
+sector.TopGrowthCompanies()
+sector.TopPerformingCompanies()
+
+industry, err := client.IndustryOf(ctx, "software-application")
+if err != nil {
+    return err
+}
+industry.Overview()
+industry.TopPerformingCompanies()
+industry.TopGrowthCompanies()
+industry.KeyCompanyKeys()
+industry.KeyCompanyGroups()
+```
+
+`SectorData.Raw` 和 `IndustryData.Raw` 保留原始响应，便于访问类型方法未提升的字段。
+
+### FundsData
+
+```go
+funds, err := client.Ticker("VGT").FundsData(ctx)
+if err != nil {
+    return err
+}
+
+funds.Description()
+funds.FundOverview()    // family / category / legalType
+funds.FundOperations()  // 费用率
+funds.AssetClasses()    // cashPosition、stockPosition 等
+funds.TopHoldings()
+funds.EquityHoldings()
+funds.BondHoldings()
+funds.BondRatings()
+funds.SectorWeightings()
+```
+
+### Search 各分区访问器
+
+`SearchResponse` 暴露 Yahoo 搜索结果的全部主要分区：
+
+```go
+resp, err := client.Search(ctx, "apple", 10, 5)
+if err != nil {
+    return err
+}
+
+resp.Quotes
+resp.NewsRows()
+resp.Lists()
+resp.Research()
+resp.All() // 同时聚合上述所有分区
+```
+
+### 可靠性与可观测性
+
+客户端提供四个字段用于在生产环境中加固请求行为：
+
+```go
+client := yfinance.NewClient(nil)
+client.Logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+client.Retries = 3
+client.RetryBackoff = 250 * time.Millisecond
+client.Limiter = yfinance.NewRateLimiter(5, 2) // 每秒 5 次，突发 2 次
+```
+
+| 字段 | 行为 |
+| --- | --- |
+| `Logger` | 非空时，每个请求和响应会以 `slog.LevelDebug` 输出 `method`/`url`/`status`。对应 yfinance 的 `enable_debug_mode()`。 |
+| `Retries` | 限定重试次数；只对瞬时错误（5xx、`ErrRateLimited`、临时网络错误）重试，每次退避翻倍。 |
+| `RetryBackoff` | 重试基础等待时间，零值默认为 250ms。 |
+| `Limiter` | 任意实现 `Limiter`（`Wait(ctx) error`）的值。使用 `NewRateLimiter(rps, burst)` 获得包内令牌桶，也可使用 `golang.org/x/time/rate.Limiter`。 |
+
+`*RateLimiter` 是一个令牌桶，按 `rps` 速率累计令牌，最多累计到 `burst`。当速率为零或负数时 `Wait` 直接返回。
+
+### 认证（Cookie + Crumb）
+
+部分 Yahoo 接口（`quoteSummary`、`v7/finance/quote`、fundamentals timeseries 等）需要带上由 cookie 派生出的 `crumb` 令牌。当客户端访问真实 Yahoo 域名时，本包会自动处理：
+
+```go
+client := yfinance.NewClient(nil)
+
+// 可选：提前完成认证；否则首次访问受保护接口时会自动触发
+if err := client.Authenticate(ctx); err != nil {
+    return err
+}
+
+fmt.Println(client.Crumb)
+```
+
+如果你传入自定义 `*http.Client`，会自动为其挂载 `cookiejar.New(nil)`。测试通过 `Query1URL`/`Query2URL` 重定向到 `httptest` 时会跳过自动认证，已有测试无需新增 mock。
+
+### 季度 / 年度股本
+
+```go
+shares, err := client.Ticker("AAPL").Shares(ctx, "quarterly")
+```
+
+`Shares` 在 `FundamentalsTimeseries` 之上请求 `ShareIssued` 和 `OrdinarySharesNumber` 两个序列。`freq` 取值为 `"quarterly"`、`"annual"`（默认）或 `"trailing"`。
+
+### 价格调整与四舍五入
+
+`HistoryParams.AutoAdjust`、`BackAdjust`、`Rounding` 与 yfinance 中的同名参数语义一致。这些调整在 Yahoo 图表数据返回后由客户端本地完成，不会触发额外请求。
+
+```go
+history, err := client.Ticker("AAPL").History(ctx, yfinance.HistoryParams{
+    Period:     yfinance.Period1Y,
+    Interval:   yfinance.Interval1D,
+    AutoAdjust: true,
+    Rounding:   true,
+})
+```
+
+## 高级搜索
+
+`SearchWithOptions` 暴露 Yahoo 搜索接口的完整参数。布尔字段使用 `*bool`，可以区分"使用服务端默认"与"显式 false"：
+
+```go
+yes := true
+resp, err := client.SearchWithOptions(ctx, "apple", yfinance.SearchOptions{
+    QuotesCount:                10,
+    NewsCount:                  5,
+    ListsCount:                 3,
+    EnableFuzzyQuery:           &yes,
+    EnableEnhancedTrivialQuery: &yes,
+    EnablePrivateCompany:       &yes,
+    RecommendCount:             5,
+    Region:                     "GB",
+    Lang:                       "en-GB",
+})
+```
+
+`Search(query, quotesCount, newsCount)` 仍然保留为简化入口。
+
+## 响应缓存
+
+`Client.Cache` 接受任意实现 `Cache` 接口（`Get`/`Set`）的值。设置后，GET-JSON 请求会在发起 HTTP 调用前查询缓存，并在成功后按完整 URL 缓存响应。`Client.CacheTTL` 控制过期时间，零值表示永不过期。
+
+```go
+client := yfinance.NewClient(nil)
+client.Cache = yfinance.NewMemoryCache()
+client.CacheTTL = 5 * time.Minute
+```
+
+`*MemoryCache` 是进程内 map 实现。要接入 Redis 或文件缓存，自行实现 `Cache` 接口即可。
+
+## WebSocket 自动重连
+
+```go
+ws := client.WebSocket("")
+ws.AutoReconnect = true
+ws.ReconnectBackoff = 500 * time.Millisecond
+ws.MaxReconnectAttempts = 0 // 0 表示无限重连
+ws.OnReconnect = func(attempt int, err error) { /* 监控 */ }
+
+if err := ws.Subscribe(ctx, "AAPL", "MSFT"); err != nil {
+    return err
+}
+
+err := ws.Listen(ctx, func(msg yfinance.StreamMessage) {
+    fmt.Println(msg.ID, msg.Price)
+})
+```
+
+`AutoReconnect=true` 时，传输错误会触发指数退避（封顶 30 秒）的重连流程，并在重连成功后自动 `Subscribe` 所有已追踪的 symbol。`OnReconnect` 在每次尝试前回调，参数包含当前尝试次数和触发错误。
 
 ## 发布与版本
 
@@ -871,7 +1071,7 @@ github.com/Nightsuki/goyfinace
 安装指定版本：
 
 ```sh
-go get github.com/Nightsuki/goyfinace@v0.4.0
+go get github.com/Nightsuki/goyfinace@v0.5.0
 ```
 
 Go 文档发布后可在 pkg.go.dev 查看：

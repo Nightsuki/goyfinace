@@ -110,6 +110,60 @@ func TestWebSocketSubscribeListenAndHeaders(t *testing.T) {
 	cancel()
 }
 
+func TestWebSocketAutoReconnect(t *testing.T) {
+	var attempts int
+	server := httptest.NewServer(xwebsocket.Handler(func(conn *xwebsocket.Conn) {
+		attempts++
+		// First connection: drop immediately to simulate transport failure.
+		if attempts == 1 {
+			conn.Close()
+			return
+		}
+		// Second connection: drain the re-subscribe payload, then send one
+		// message and hold open until the test cancels.
+		var sub map[string][]string
+		_ = xwebsocket.JSON.Receive(conn, &sub)
+		_ = xwebsocket.Message.Send(conn, `{"id":"AAPL","price":201.5}`)
+		// Block until peer closes.
+		var sink string
+		_ = xwebsocket.Message.Receive(conn, &sink)
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	ws := NewWebSocket(wsURL)
+	ws.AutoReconnect = true
+	ws.ReconnectBackoff = 5 * time.Millisecond
+	ws.MaxReconnectAttempts = 3
+	var reconnects int
+	ws.OnReconnect = func(attempt int, err error) { reconnects++ }
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := ws.Subscribe(ctx, "aapl"); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	got := make(chan StreamMessage, 1)
+	listenErr := make(chan error, 1)
+	go func() {
+		listenErr <- ws.Listen(ctx, func(msg StreamMessage) { got <- msg })
+	}()
+	select {
+	case msg := <-got:
+		if msg.ID != "AAPL" {
+			t.Fatalf("message = %+v", msg)
+		}
+	case err := <-listenErr:
+		t.Fatalf("Listen exited early: %v", err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for post-reconnect message")
+	}
+	if reconnects == 0 {
+		t.Fatalf("OnReconnect never fired")
+	}
+	cancel()
+}
+
 func appendProtoKey(out []byte, field int, wire int) []byte {
 	return binary.AppendUvarint(out, uint64(field<<3|wire))
 }

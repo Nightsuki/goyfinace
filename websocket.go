@@ -61,6 +61,20 @@ type WebSocket struct {
 	Origin    string
 	UserAgent string
 
+	// AutoReconnect enables transparent reconnection inside Listen when the
+	// underlying connection drops. Re-subscribes to all known symbols after
+	// each successful reconnection.
+	AutoReconnect bool
+	// ReconnectBackoff is the base delay between reconnection attempts; each
+	// attempt doubles the prior wait, capped at 30 seconds. Defaults to 500ms.
+	ReconnectBackoff time.Duration
+	// MaxReconnectAttempts bounds the number of reconnection attempts per
+	// drop. Zero means unlimited.
+	MaxReconnectAttempts int
+	// OnReconnect, when non-nil, is invoked before each reconnection attempt
+	// with the attempt number (1-indexed) and the error that triggered it.
+	OnReconnect func(attempt int, err error)
+
 	mu            sync.Mutex
 	conn          *xwebsocket.Conn
 	subscriptions map[string]struct{}
@@ -183,6 +197,10 @@ func (ws *WebSocket) Subscriptions() []string {
 
 // Listen receives messages until the context is cancelled or Receive returns
 // an error. The handler may be nil, in which case messages are simply decoded.
+//
+// When ws.AutoReconnect is true, Listen transparently re-establishes the
+// connection on transport errors and re-subscribes to every symbol tracked
+// by Subscriptions().
 func (ws *WebSocket) Listen(ctx context.Context, handler func(StreamMessage)) error {
 	if err := ws.Connect(ctx); err != nil {
 		return err
@@ -198,11 +216,21 @@ func (ws *WebSocket) Listen(ctx context.Context, handler func(StreamMessage)) er
 	defer close(done)
 	for {
 		var text string
-		if err := xwebsocket.Message.Receive(ws.currentConn(), &text); err != nil {
-			if ctx.Err() != nil || err == io.EOF {
+		err := xwebsocket.Message.Receive(ws.currentConn(), &text)
+		if err != nil {
+			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			return err
+			if !ws.AutoReconnect {
+				if err == io.EOF {
+					return nil
+				}
+				return err
+			}
+			if rerr := ws.reconnect(ctx, err); rerr != nil {
+				return rerr
+			}
+			continue
 		}
 		msg, err := DecodeStreamMessage([]byte(text))
 		if err != nil {
@@ -212,6 +240,45 @@ func (ws *WebSocket) Listen(ctx context.Context, handler func(StreamMessage)) er
 			handler(msg)
 		}
 	}
+}
+
+func (ws *WebSocket) reconnect(ctx context.Context, cause error) error {
+	backoff := ws.ReconnectBackoff
+	if backoff <= 0 {
+		backoff = 500 * time.Millisecond
+	}
+	const maxBackoff = 30 * time.Second
+	for attempt := 1; ws.MaxReconnectAttempts == 0 || attempt <= ws.MaxReconnectAttempts; attempt++ {
+		if ws.OnReconnect != nil {
+			ws.OnReconnect(attempt, cause)
+		}
+		_ = ws.Close()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+		}
+		if backoff < maxBackoff {
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+		}
+		if err := ws.Connect(ctx); err != nil {
+			cause = err
+			continue
+		}
+		// Re-subscribe to every known symbol.
+		symbols := ws.Subscriptions()
+		if len(symbols) > 0 {
+			if err := xwebsocket.JSON.Send(ws.currentConn(), map[string]any{"subscribe": symbols}); err != nil {
+				cause = err
+				continue
+			}
+		}
+		return nil
+	}
+	return fmt.Errorf("yfinance: reconnect exhausted after %d attempts: %w", ws.MaxReconnectAttempts, cause)
 }
 
 func (ws *WebSocket) send(ctx context.Context, payload any) error {

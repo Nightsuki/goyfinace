@@ -128,12 +128,17 @@ Downloads OHLCV candles from Yahoo's chart endpoint.
 
 ```go
 type HistoryParams struct {
-	Period   string
-	Interval string
-	Start    time.Time
-	End      time.Time
-	PrePost  bool
-	Events   []string
+	Period     string
+	Interval   string
+	Start      time.Time
+	End        time.Time
+	PrePost    bool
+	Events     []string
+	AutoAdjust bool
+	BackAdjust bool
+	Rounding   bool
+	Repair     bool
+	Threads    int
 }
 ```
 
@@ -145,6 +150,14 @@ type HistoryParams struct {
 | `End` | Exclusive end time for an explicit date range. If `Start` is set and `End` is zero, the current time is used. |
 | `PrePost` | Requests pre-market and post-market rows when Yahoo supports them. |
 | `Events` | Event types to request. Empty requests dividends, splits, and capital gains. |
+| `AutoAdjust` | Applies `AdjClose/Close` ratio to OHLC and inverse to Volume so OHLC are split- and dividend-adjusted. Mirrors yfinance's `auto_adjust=True`. |
+| `BackAdjust` | Back-adjusts older candles so the most recent Close matches AdjClose, preserving the latest raw price. Mirrors yfinance's `back_adjust=True`. |
+| `Rounding` | Rounds OHLC values to the chart's `PriceHint` decimals. Mirrors yfinance's `rounding=True`. |
+| `Repair` | Heuristically fixes 100x and 0.01x price anomalies (Yahoo currency-unit changes) by comparing each row's Close to its neighborhood median. Mirrors yfinance's `repair=True`. |
+| `Threads` | Bounds in-flight Download concurrency. Zero or negative means unlimited. Ignored by `History`. Mirrors yfinance's `download(threads=N)`. |
+| `NoEvents` | Suppresses dividend/split/capital-gain event requests. By default Yahoo events are included. |
+| `OnProgress` | Optional `func(symbol, idx, total int, err error)` invoked by `Download` once per symbol after completion. Mirrors yfinance's tqdm-driven progress hook. |
+| `DropNaN` | Drops candles whose every OHLC value is NaN. Mirrors yfinance's `dropna=True`. |
 
 ### Period Constants
 
@@ -816,11 +829,11 @@ Beyond the core APIs above, the package exposes Go-native equivalents for the ma
 - Corporate actions: `Actions`, `Dividends`, `Splits`, `CapitalGains`.
 - Quote and quote-summary extras: `Quote`, `Calendar`, `SECFilings`, `Sustainability`, `Valuation`.
 - Analyst data: `Analysis`, `AnalystPriceTargets`, `UpgradesDowngrades`, `Recommendations`.
-- Funds and holders: `FundProfile`, `Holders`.
+- Funds and holders: `FundProfile`, `FundsData`, `Holders`.
 - Financial statements and shares: `FundamentalsTimeseries`, `IncomeStatement`, `BalanceSheet`, `CashFlow`, `SharesFull`.
 - Estimates, holders, and insiders: `EarningsEstimate`, `RevenueEstimate`, `EarningsHistory`, `EPSRevisions`, `EPSTrend`, `GrowthEstimates`, `RecommendationsSummary`, `MajorHolders`, `InstitutionalHolders`, `MutualFundHolders`, `InsiderPurchases`, `InsiderTransactions`, `InsiderRosterHolders`.
 - Discovery and screeners: `Lookup`, `LookupISIN`, `Search`, `Screen`, `PredefinedScreen`, `EquityQuery`, `FundQuery`, `ETFQuery`.
-- Market/domain data: `Market`, `MarketSummary`, `MarketStatus`, `Sector`, `Industry`.
+- Market/domain data: `Market`, `MarketSummary`, `MarketStatus`, `Sector`, `Industry`, `SectorOf`, `IndustryOf`.
 - Calendars/news: `CalendarVisualization`, `EarningsDates`, `News`.
 - Multi-symbol and streaming helpers: `Tickers`, `WebSocket`, `AsyncWebSocket`.
 
@@ -838,6 +851,200 @@ Migration examples:
 | `ticker.option_chain(...)` | `ticker.Options(ctx, expiration)` |
 | `ticker.financials` | `ticker.Financials(ctx)` |
 | `yf.WebSocket(...)` | `yfinance.NewWebSocket(url)` |
+| `yf.Sector("technology").top_companies` | `client.SectorOf(ctx, "technology").TopCompanies()` |
+| `yf.Industry("software-application").top_growth_companies` | `client.IndustryOf(ctx, "software-application").TopGrowthCompanies()` |
+| `ticker.funds_data.top_holdings` | `ticker.FundsData(ctx).TopHoldings()` |
+| `Search(...).lists` | `client.Search(ctx, q, n, m).Lists()` |
+| `ticker.history(auto_adjust=True)` | `ticker.History(ctx, HistoryParams{AutoAdjust: true})` |
+
+## Typed Domain Accessors
+
+Beyond the raw `Sector`/`Industry`/`FundProfile` map endpoints, the package exposes typed wrappers that mirror the property surface of yfinance's `Sector`, `Industry`, and `FundsData` classes.
+
+### SectorOf / IndustryOf
+
+```go
+sector, err := client.SectorOf(ctx, "technology")
+if err != nil {
+    return err
+}
+
+fmt.Println(sector.Name)
+fmt.Println(sector.Overview())
+for _, row := range sector.TopCompanies() {
+    fmt.Println(row["symbol"])
+}
+for _, row := range sector.TopETFs() { /* ... */ }
+for _, row := range sector.TopMutualFunds() { /* ... */ }
+for _, row := range sector.Industries() { /* ... */ }
+sector.TopGrowthCompanies()
+sector.TopPerformingCompanies()
+
+industry, err := client.IndustryOf(ctx, "software-application")
+if err != nil {
+    return err
+}
+fmt.Println(industry.Name, industry.SectorKey, industry.SectorName)
+industry.Overview()
+industry.TopPerformingCompanies()
+industry.TopGrowthCompanies()
+industry.KeyCompanyKeys()
+industry.KeyCompanyGroups()
+```
+
+`SectorData.Raw` and `IndustryData.Raw` preserve the full Yahoo response for fields not promoted by the typed methods.
+
+### FundsData
+
+```go
+funds, err := client.Ticker("VGT").FundsData(ctx)
+if err != nil {
+    return err
+}
+
+fmt.Println(funds.Description())
+fmt.Println(funds.FundOverview())   // family / category / legalType
+fmt.Println(funds.FundOperations()) // expense ratios
+fmt.Println(funds.AssetClasses())   // cashPosition, stockPosition, ...
+for _, h := range funds.TopHoldings() {
+    fmt.Println(h["symbol"], h["holdingPercent"])
+}
+funds.EquityHoldings()
+funds.BondHoldings()
+funds.BondRatings()
+funds.SectorWeightings()
+```
+
+### Search Result Sections
+
+`SearchResponse` exposes typed accessors for every primary section returned by Yahoo:
+
+```go
+resp, err := client.Search(ctx, "apple", 10, 5)
+if err != nil {
+    return err
+}
+
+for _, q := range resp.Quotes { fmt.Println(q.Symbol) }
+for _, n := range resp.NewsRows() { fmt.Println(n["title"]) }
+for _, l := range resp.Lists() { fmt.Println(l["slug"]) }
+for _, r := range resp.Research() { fmt.Println(r["title"]) }
+
+all := resp.All() // {"quotes": ..., "news": ..., "lists": ..., "researchReports": ...}
+```
+
+### Reliability and Observability
+
+The client exposes four `Client` fields for hardening production traffic:
+
+```go
+client := yfinance.NewClient(nil)
+client.Logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+client.Retries = 3
+client.RetryBackoff = 250 * time.Millisecond
+client.Limiter = yfinance.NewRateLimiter(5, 2) // 5 req/s, burst 2
+```
+
+| Field | Behavior |
+| --- | --- |
+| `Logger` | When non-nil, every request and response is emitted at `slog.LevelDebug` with `method`, `url`, `status`. Mirrors yfinance's `enable_debug_mode()`. |
+| `Retries` | Bounds retries for transient failures (`5xx`, `ErrRateLimited`, temporary network errors). Backoff doubles on each attempt. |
+| `RetryBackoff` | Base wait between retries. Defaults to 250 ms when zero. |
+| `Limiter` | Any value satisfying the `Limiter` interface (`Wait(ctx) error`). Use `NewRateLimiter(rps, burst)` for an in-package token bucket, or pass `golang.org/x/time/rate.Limiter`. |
+
+`*RateLimiter` is a token bucket: tokens accrue at `rps` per second up to a `burst` cap. A zero or negative rate makes `Wait` a no-op.
+
+### Authentication (Cookies + Crumb)
+
+Some Yahoo endpoints — most notably `quoteSummary`, `v7/finance/quote`, and the fundamentals timeseries — require a `crumb` token paired with a session cookie. `goyfinace` handles this automatically when the client targets the real Yahoo hosts:
+
+```go
+client := yfinance.NewClient(nil)
+
+// Optional: pre-fetch the crumb up front. Otherwise the first call to a
+// crumb-protected endpoint will trigger Authenticate transparently.
+if err := client.Authenticate(ctx); err != nil {
+    return err
+}
+
+fmt.Println(client.Crumb)
+```
+
+When you pass your own `*http.Client`, ensure it has a cookie jar — otherwise the package installs `cookiejar.New(nil)` for you. Tests that override `Query1URL`/`Query2URL` to point at `httptest` skip the auto-authentication step, so existing test suites do not need to mock the crumb endpoint.
+
+### Quarterly / Annual Shares
+
+```go
+shares, err := client.Ticker("AAPL").Shares(ctx, "quarterly")
+```
+
+`Shares` wraps `FundamentalsTimeseries` for the `ShareIssued` and `OrdinarySharesNumber` types. Pass `"quarterly"`, `"annual"` (default when empty), or `"trailing"`.
+
+### Adjusted History
+
+`HistoryParams.AutoAdjust`, `BackAdjust`, and `Rounding` mirror yfinance's pricing adjustment flags. They are applied client-side to the candles returned by Yahoo's chart endpoint, so no extra request is needed.
+
+```go
+history, err := client.Ticker("AAPL").History(ctx, yfinance.HistoryParams{
+    Period:     yfinance.Period1Y,
+    Interval:   yfinance.Interval1D,
+    AutoAdjust: true,
+    Rounding:   true,
+})
+```
+
+## Advanced Search
+
+`SearchWithOptions` exposes the full Yahoo search query surface. Pointer-bool fields make it possible to differentiate "leave at server default" from an explicit `false`:
+
+```go
+yes := true
+resp, err := client.SearchWithOptions(ctx, "apple", yfinance.SearchOptions{
+    QuotesCount:                10,
+    NewsCount:                  5,
+    ListsCount:                 3,
+    EnableFuzzyQuery:           &yes,
+    EnableEnhancedTrivialQuery: &yes,
+    EnablePrivateCompany:       &yes,
+    RecommendCount:             5,
+    Region:                     "GB",
+    Lang:                       "en-GB",
+})
+```
+
+`Search(query, quotesCount, newsCount)` remains the simple two-argument form.
+
+## Response Cache
+
+`Client.Cache` accepts any value implementing the `Cache` interface (`Get`, `Set`). When set, GET-JSON requests check the cache before issuing an HTTP request and store successful responses keyed by full URL. `Client.CacheTTL` controls expiry; zero means no expiry.
+
+```go
+client := yfinance.NewClient(nil)
+client.Cache = yfinance.NewMemoryCache()
+client.CacheTTL = 5 * time.Minute
+```
+
+`*MemoryCache` is a process-local map. Plug in a Redis-backed or filesystem-backed implementation by satisfying the `Cache` interface.
+
+## WebSocket Auto-Reconnect
+
+```go
+ws := client.WebSocket("")
+ws.AutoReconnect = true
+ws.ReconnectBackoff = 500 * time.Millisecond
+ws.MaxReconnectAttempts = 0 // 0 = unlimited
+ws.OnReconnect = func(attempt int, err error) { /* observability */ }
+
+if err := ws.Subscribe(ctx, "AAPL", "MSFT"); err != nil {
+    return err
+}
+
+err := ws.Listen(ctx, func(msg yfinance.StreamMessage) {
+    fmt.Println(msg.ID, msg.Price)
+})
+```
+
+When `AutoReconnect` is true, transport errors trigger an exponential-backoff reconnect (capped at 30 s) and a re-`Subscribe` of every tracked symbol before resuming. `OnReconnect` is fired before each attempt with the attempt number and triggering error.
 
 ## Versioning
 
@@ -850,7 +1057,7 @@ github.com/Nightsuki/goyfinace
 Install a specific version:
 
 ```sh
-go get github.com/Nightsuki/goyfinace@v0.4.0
+go get github.com/Nightsuki/goyfinace@v0.5.0
 ```
 
 Go package documentation is available after pkg.go.dev indexes the module:

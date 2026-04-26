@@ -266,6 +266,20 @@ func (t *Ticker) SharesFull(ctx context.Context, start, end time.Time) (map[stri
 	return t.c().SharesFull(ctx, t.Symbol, start, end)
 }
 
+// Shares fetches the quarterly or annual share-count time series. Mirrors
+// yfinance's Ticker.shares (which returns sharesOutstanding by reporting
+// period). Pass "quarterly", "annual" (default), or "trailing" for freq.
+func (c *Client) Shares(ctx context.Context, symbol string, freq string) (map[string]any, error) {
+	return c.FundamentalsTimeseries(ctx, symbol,
+		prefixTimeseriesTypes(freq, []string{"ShareIssued", "OrdinarySharesNumber"}),
+		time.Time{}, time.Time{})
+}
+
+// Shares fetches the quarterly or annual share-count time series for this ticker.
+func (t *Ticker) Shares(ctx context.Context, freq string) (map[string]any, error) {
+	return t.c().Shares(ctx, t.Symbol, freq)
+}
+
 // IncomeStatement fetches a common income-statement fundamentals timeseries set.
 func (c *Client) IncomeStatement(ctx context.Context, symbol string, freq string) (map[string]any, error) {
 	return c.FundamentalsTimeseries(ctx, symbol, prefixTimeseriesTypes(freq, incomeStatementTypes), time.Time{}, time.Time{})
