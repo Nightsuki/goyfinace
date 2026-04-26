@@ -77,6 +77,27 @@ history, err := client.History(ctx, "MSFT", yfinance.HistoryParams{
 
 Yahoo treats `End` as exclusive, matching `yfinance` behavior.
 
+## DataFrame Adapter
+
+The core API returns Go structs, slices, and maps instead of exposing a DataFrame type. For pandas-style table workflows, import the Gota adapter:
+
+```go
+import yfgota "github.com/Nightsuki/goyfinace/adapter/gota"
+
+history, err := client.History(ctx, "AAPL", yfinance.HistoryParams{
+	Period:   yfinance.Period1Mo,
+	Interval: yfinance.Interval1D,
+})
+if err != nil {
+	log.Fatal(err)
+}
+
+df := yfgota.History(history)
+fmt.Println(df.Nrow(), df.Col("Close").Float())
+```
+
+The adapter currently supports history candles, option contracts/chains, search results, quote-summary modules, key/value maps, and generic records.
+
 ## Testing
 
 ```sh

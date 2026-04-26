@@ -312,6 +312,96 @@ type DownloadResult struct {
 }
 ```
 
+## DataFrame 适配器：Gota
+
+根包默认返回 Go 原生值，不直接暴露 DataFrame 类型。对于从 pandas 风格 `yfinance` 迁移过来的用户，`goyfinace` 提供可选 Gota 适配器：
+
+```go
+import yfgota "github.com/Nightsuki/goyfinace/adapter/gota"
+```
+
+适配器位于独立 import path，因此只使用核心 HTTP 客户端的应用无需直接使用 DataFrame API。
+
+### 历史行情 DataFrame
+
+```go
+history, err := client.History(ctx, "AAPL", yfinance.HistoryParams{
+	Period:   yfinance.Period1Mo,
+	Interval: yfinance.Interval1D,
+})
+if err != nil {
+	return err
+}
+
+df := yfgota.History(history)
+fmt.Println(df.Nrow())
+fmt.Println(df.Col("Close").Float())
+```
+
+`yfgota.History` 和 `yfgota.Candles` 会生成接近 Python `yfinance` 使用习惯的列名：
+
+- `Time`
+- `Timestamp`
+- `Open`
+- `High`
+- `Low`
+- `Close`
+- `Adj Close`
+- `Volume`
+- `Dividends`
+- `Stock Splits`
+
+`Time` 是 UTC RFC3339 字符串。`Timestamp` 是 Unix 秒数，便于数值排序或过滤。
+
+### 期权 DataFrame
+
+```go
+chain, err := client.Options(ctx, "AAPL", time.Time{})
+if err != nil {
+	return err
+}
+
+calls, puts := yfgota.Options(chain)
+fmt.Println(calls.Nrow(), puts.Nrow())
+```
+
+也可以单独转换一侧：
+
+```go
+calls := yfgota.OptionContracts(chain.Calls)
+```
+
+期权 DataFrame 使用 Yahoo option-chain 字段名，例如 `contractSymbol`、`lastTradeDate`、`strike`、`lastPrice`、`bid`、`ask`、`volume`、`openInterest`、`impliedVolatility`。
+
+### Search 与 QuoteSummary DataFrame
+
+```go
+search, err := client.Search(ctx, "apple", 10, 0)
+if err != nil {
+	return err
+}
+quotes := yfgota.Search(search)
+
+summary, err := client.QuoteSummary(ctx, "AAPL", "price", "summaryDetail")
+if err != nil {
+	return err
+}
+longForm := yfgota.QuoteSummary(summary)
+```
+
+`QuoteSummary` 返回长表结构，包含 `Module`、`Key`、`Value` 三列。Yahoo `{raw, fmt}` 值会优先展开为 `raw`，嵌套对象会转成 JSON 字符串，以便放入 DataFrame 的标量单元格。
+
+### 通用 map 和 records helper
+
+```go
+kv := yfgota.KeyValues(info)
+records := yfgota.Records([]map[string]any{
+	{"symbol": "AAPL", "regularMarketPrice": 201.5},
+})
+```
+
+这些 helper 可用于财务模块、holders、recommendations 或调用方自行整理后的记录。
+
 ## QuoteSummary
 
 ```go
@@ -660,6 +750,7 @@ client.Query2URL = "http://127.0.0.1:8080"
 主要差异：
 
 - Go 版本不返回 DataFrame，而是返回结构体、切片和 map。
+- 可选 DataFrame 支持位于 `github.com/Nightsuki/goyfinace/adapter/gota`，但它不是完整 pandas 克隆。
 - `Info` 返回扁平化 map，但不保证字段集合固定。
 - `Financials` 等财务接口保留 Yahoo 原始模块结构，调用方可以按需要建模。
 - 暂未实现 Python 版本中的所有 scraping、repair、WebSocket 和 pandas 相关能力。
@@ -686,7 +777,7 @@ github.com/Nightsuki/goyfinace
 安装指定版本：
 
 ```sh
-go get github.com/Nightsuki/goyfinace@v0.1.1
+go get github.com/Nightsuki/goyfinace@v0.2.0
 ```
 
 Go 文档发布后可在 pkg.go.dev 查看：

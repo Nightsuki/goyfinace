@@ -304,6 +304,96 @@ type DownloadResult struct {
 }
 ```
 
+## DataFrame Adapter: Gota
+
+The root package intentionally returns Go-native values and does not expose a DataFrame type. For users migrating from pandas-oriented `yfinance` workflows, `goyfinace` provides an optional adapter package:
+
+```go
+import yfgota "github.com/Nightsuki/goyfinace/adapter/gota"
+```
+
+Because the adapter lives in a separate import path, applications that only need the core HTTP client do not need to use DataFrame APIs directly.
+
+### History DataFrames
+
+```go
+history, err := client.History(ctx, "AAPL", yfinance.HistoryParams{
+	Period:   yfinance.Period1Mo,
+	Interval: yfinance.Interval1D,
+})
+if err != nil {
+	return err
+}
+
+df := yfgota.History(history)
+fmt.Println(df.Nrow())
+fmt.Println(df.Col("Close").Float())
+```
+
+`yfgota.History` and `yfgota.Candles` produce columns that are familiar to Python `yfinance` users:
+
+- `Time`
+- `Timestamp`
+- `Open`
+- `High`
+- `Low`
+- `Close`
+- `Adj Close`
+- `Volume`
+- `Dividends`
+- `Stock Splits`
+
+`Time` is formatted as RFC3339 UTC text. `Timestamp` stores Unix seconds for callers that prefer numeric sorting or filtering.
+
+### Option DataFrames
+
+```go
+chain, err := client.Options(ctx, "AAPL", time.Time{})
+if err != nil {
+	return err
+}
+
+calls, puts := yfgota.Options(chain)
+fmt.Println(calls.Nrow(), puts.Nrow())
+```
+
+You can also convert one side directly:
+
+```go
+calls := yfgota.OptionContracts(chain.Calls)
+```
+
+Option DataFrame columns follow Yahoo option-chain field names such as `contractSymbol`, `lastTradeDate`, `strike`, `lastPrice`, `bid`, `ask`, `volume`, `openInterest`, and `impliedVolatility`.
+
+### Search and QuoteSummary DataFrames
+
+```go
+search, err := client.Search(ctx, "apple", 10, 0)
+if err != nil {
+	return err
+}
+quotes := yfgota.Search(search)
+
+summary, err := client.QuoteSummary(ctx, "AAPL", "price", "summaryDetail")
+if err != nil {
+	return err
+}
+longForm := yfgota.QuoteSummary(summary)
+```
+
+`QuoteSummary` returns a long-form table with `Module`, `Key`, and `Value` columns. Yahoo `{raw, fmt}` values are unwrapped to `raw` first, and nested values are JSON stringified so they can live in scalar DataFrame cells.
+
+### Generic Map and Record Helpers
+
+```go
+kv := yfgota.KeyValues(info)
+records := yfgota.Records([]map[string]any{
+	{"symbol": "AAPL", "regularMarketPrice": 201.5},
+})
+```
+
+Use these helpers for financial modules, holders, recommendations, or your own normalized records.
+
 ## QuoteSummary
 
 ```go
@@ -639,6 +729,7 @@ The repository unit tests use `httptest` fixtures and do not call Yahoo Finance.
 Main differences:
 
 - The Go package returns structs, slices, and maps instead of DataFrames.
+- Optional DataFrame support is available through `github.com/Nightsuki/goyfinace/adapter/gota`; it is not a full pandas clone.
 - `Info` returns a flattened map but does not promise a fixed field set.
 - Financial methods preserve Yahoo's raw module structure for caller-owned modeling.
 - Python-specific scraping, repair logic, WebSocket features, and pandas behavior are not fully implemented.
@@ -665,7 +756,7 @@ github.com/Nightsuki/goyfinace
 Install a specific version:
 
 ```sh
-go get github.com/Nightsuki/goyfinace@v0.1.1
+go get github.com/Nightsuki/goyfinace@v0.2.0
 ```
 
 Go package documentation is available after pkg.go.dev indexes the module:
