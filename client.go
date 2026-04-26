@@ -19,10 +19,15 @@ const (
 
 // Client is a Yahoo Finance HTTP client.
 type Client struct {
+	// HTTPClient is used for all requests. A nil value is replaced by a client
+	// with a 15 second timeout.
 	HTTPClient *http.Client
-	Query1URL  string
-	Query2URL  string
-	UserAgent  string
+	// Query1URL and Query2URL allow tests and advanced callers to override the
+	// Yahoo host. Leave empty for the default Yahoo endpoints.
+	Query1URL string
+	Query2URL string
+	// UserAgent is sent on every request. Leave empty for the package default.
+	UserAgent string
 }
 
 // NewClient returns a client configured for Yahoo Finance public endpoints.

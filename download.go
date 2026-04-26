@@ -7,9 +7,13 @@ import (
 
 // DownloadResult contains one symbol's download outcome.
 type DownloadResult struct {
+	// Symbol is the normalized uppercase symbol requested for this slot.
 	Symbol string
+	// Result is populated when Err is nil.
 	Result *HistoryResult
-	Err    error
+	// Err is the per-symbol error. Download does not fail fast; inspect each
+	// result independently.
+	Err error
 }
 
 // Download downloads history for multiple symbols concurrently.

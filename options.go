@@ -10,30 +10,35 @@ import (
 
 // OptionChain contains calls and puts for one expiration date.
 type OptionChain struct {
-	Symbol         string
-	Underlying     map[string]any
+	Symbol string
+	// Underlying is Yahoo's raw quote object for the underlying instrument.
+	Underlying map[string]any
+	// ExpirationDate is the expiration represented by Calls and Puts.
 	ExpirationDate time.Time
-	Expirations    []time.Time
-	Strikes        []float64
-	Calls          []OptionContract
-	Puts           []OptionContract
+	// Expirations lists all expiration dates Yahoo returned for the symbol.
+	Expirations []time.Time
+	Strikes     []float64
+	Calls       []OptionContract
+	Puts        []OptionContract
 }
 
 // OptionContract is an option row returned by Yahoo.
 type OptionContract struct {
-	ContractSymbol    string
-	Strike            float64
-	Currency          string
-	LastPrice         float64
-	Change            float64
-	PercentChange     float64
-	Volume            int64
-	OpenInterest      int64
-	Bid               float64
-	Ask               float64
-	ContractSize      string
-	Expiration        time.Time
-	LastTradeDate     time.Time
+	ContractSymbol string
+	Strike         float64
+	Currency       string
+	LastPrice      float64
+	Change         float64
+	PercentChange  float64
+	Volume         int64
+	OpenInterest   int64
+	Bid            float64
+	Ask            float64
+	ContractSize   string
+	Expiration     time.Time
+	LastTradeDate  time.Time
+	// ImpliedVolatility is the decimal volatility returned by Yahoo, e.g. 0.25
+	// for 25%.
 	ImpliedVolatility float64
 	InTheMoney        bool
 }

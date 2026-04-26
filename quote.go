@@ -80,12 +80,13 @@ func (c *Client) Info(ctx context.Context, symbol string) (map[string]any, error
 
 // FastInfo contains selected ticker metadata.
 type FastInfo struct {
-	Symbol               string
-	Currency             string
-	ExchangeName         string
-	FullExchangeName     string
-	InstrumentType       string
-	Timezone             string
+	Symbol           string
+	Currency         string
+	ExchangeName     string
+	FullExchangeName string
+	InstrumentType   string
+	Timezone         string
+	// ExchangeTimezoneName is the IANA timezone name returned in chart metadata.
 	ExchangeTimezoneName string
 	RegularMarketPrice   float64
 	PreviousClose        float64

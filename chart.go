@@ -39,50 +39,78 @@ const (
 
 // HistoryParams controls chart downloads.
 type HistoryParams struct {
-	Period   string
+	// Period is a Yahoo range value such as Period1D, Period1Mo, Period1Y, or
+	// PeriodMax. It is used only when Start and End are both zero. If empty, the
+	// client defaults to Period1Mo.
+	Period string
+	// Interval is the candle size, for example Interval1D or Interval1H. If
+	// empty, the client defaults to Interval1D.
 	Interval string
-	Start    time.Time
-	End      time.Time
-	PrePost  bool
-	Events   []string
+	// Start is the inclusive beginning of an explicit date range. Set Start or
+	// End to use period1/period2 instead of range.
+	Start time.Time
+	// End is the exclusive end of an explicit date range. If Start is set and
+	// End is zero, the current time is used.
+	End time.Time
+	// PrePost includes pre-market and post-market rows when Yahoo supports them.
+	PrePost bool
+	// Events controls event data included by Yahoo. If empty, dividends, splits,
+	// and capital gains are requested.
+	Events []string
 }
 
 // Candle is one OHLCV row from Yahoo chart data.
 type Candle struct {
-	Time      time.Time
-	Open      float64
-	High      float64
-	Low       float64
-	Close     float64
-	AdjClose  float64
-	Volume    int64
+	// Time is the candle timestamp in UTC.
+	Time time.Time
+	// Open, High, Low, and Close are the raw OHLC prices. Yahoo null values are
+	// represented as math.NaN for floating point fields.
+	Open  float64
+	High  float64
+	Low   float64
+	Close float64
+	// AdjClose is Yahoo's adjusted close value. If Yahoo omits adjusted close,
+	// the client falls back to Close for that row.
+	AdjClose float64
+	// Volume is the reported trading volume. Missing volume is zero.
+	Volume int64
+	// Dividends contains the dividend amount for this timestamp when Yahoo
+	// returns a dividend event.
 	Dividends float64
-	Split     float64
+	// Split is numerator/denominator for a split event at this timestamp. For
+	// example, a 4-for-1 split is represented as 4.
+	Split float64
 }
 
 // ChartMeta contains selected metadata returned by Yahoo chart.
 type ChartMeta struct {
-	Currency             string
-	Symbol               string
-	ExchangeName         string
-	FullExchangeName     string
-	InstrumentType       string
-	FirstTradeDate       time.Time
-	RegularMarketTime    time.Time
-	GMTOffset            int
-	Timezone             string
+	Currency          string
+	Symbol            string
+	ExchangeName      string
+	FullExchangeName  string
+	InstrumentType    string
+	FirstTradeDate    time.Time
+	RegularMarketTime time.Time
+	// GMTOffset is Yahoo's exchange offset in seconds.
+	GMTOffset int
+	Timezone  string
+	// ExchangeTimezoneName is the IANA timezone name when Yahoo provides one.
 	ExchangeTimezoneName string
 	RegularMarketPrice   float64
 	ChartPreviousClose   float64
 	PriceHint            int
-	Raw                  map[string]any
+	// Raw contains the full chart meta object for callers that need fields not
+	// promoted by this struct.
+	Raw map[string]any
 }
 
 // HistoryResult contains candles and response metadata for one symbol.
 type HistoryResult struct {
-	Symbol   string
-	Meta     ChartMeta
-	Candles  []Candle
+	Symbol  string
+	Meta    ChartMeta
+	Candles []Candle
+	// YahooErr is set when Yahoo returned a structured chart error. The same
+	// error is also returned from History.
 	YahooErr *YahooError
 }
 

@@ -4,6 +4,10 @@
 
 Yahoo Finance does not provide these endpoints as a supported public API. Treat upstream schema changes and rate limits as expected operational risks.
 
+## Acknowledgements
+
+This project is inspired by and API-compatible in spirit with [ranaroussi/yfinance](https://github.com/ranaroussi/yfinance). Thanks to the `yfinance` project for documenting the practical Yahoo Finance workflows that this Go implementation follows.
+
 ## Install
 
 ```sh
@@ -54,6 +58,11 @@ func main() {
 - `Client.Options`: option chains for the default or requested expiration.
 - `Client.Financials`, `Client.Holders`, `Client.Recommendations`: convenience wrappers over quote-summary modules.
 
+Detailed API documentation is available in English by default, with Chinese as a localized version:
+
+- English: [docs/API.md](docs/API.md)
+- 中文: [docs/API.zh.md](docs/API.zh.md)
+
 ## Date Ranges
 
 Use either a Yahoo period string or explicit start/end timestamps:
@@ -80,4 +89,3 @@ The unit tests use `httptest` and do not call Yahoo Finance.
 ## License
 
 Apache License 2.0. This project is a Go implementation inspired by the public behavior of `yfinance`; it is not affiliated with Yahoo.
-
