@@ -57,7 +57,9 @@ func main() {
 - `Client.Search`: symbol lookup via Yahoo Finance search.
 - `Client.Options`: option chains for the default or requested expiration.
 - `Client.Financials`, `Client.Holders`, `Client.Recommendations`: convenience wrappers over quote-summary modules.
-- yfinance-compatible extras: `Actions`, `Dividends`, `Splits`, `CapitalGains`, `Quote`, `News`, `Calendar`, `SECFilings`, `Sustainability`, `Valuation`, `Analysis`, `UpgradesDowngrades`, `FundProfile`, `SharesFull`, statement timeseries, `Lookup`, `PredefinedScreen`, `Screen`, `MarketSummary`, `MarketStatus`, `Sector`, `Industry`, and `EarningsDates`.
+- yfinance-compatible extras: `Actions`, `Dividends`, `Splits`, `CapitalGains`, `Quote`, `News`, `Calendar`, `SECFilings`, `Sustainability`, `Valuation`, `Analysis`, analyst estimates, holder/insider helpers, `FundProfile`, `SharesFull`, statement timeseries, `Lookup`, `PredefinedScreen`, `Screen`, screener query builders, `Market`, `Tickers`, `Calendars`, `MarketSummary`, `MarketStatus`, `Sector`, `Industry`, `EarningsDates`, and `WebSocket`.
+
+The default `UserAgent` mirrors the browser user-agent list used by upstream `yfinance`. Set `Client.UserAgent` when a fixed application-specific value is required.
 
 Detailed API documentation is available in English by default, with Chinese as a localized version:
 

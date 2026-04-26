@@ -31,12 +31,7 @@ func (c *Client) Quote(ctx context.Context, symbols ...string) ([]Quote, error) 
 	if len(symbols) == 0 {
 		return nil, fmt.Errorf("yfinance: no symbols")
 	}
-	normalized := make([]string, 0, len(symbols))
-	for _, symbol := range symbols {
-		if s := normalizeSymbol(symbol); s != "" {
-			normalized = append(normalized, s)
-		}
-	}
+	normalized := normalizeSymbols(symbols)
 	if len(normalized) == 0 {
 		return nil, fmt.Errorf("yfinance: no symbols")
 	}

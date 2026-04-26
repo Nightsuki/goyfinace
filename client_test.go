@@ -17,6 +17,9 @@ func TestHistoryDecodesCandlesAndEvents(t *testing.T) {
 		if r.URL.Path != "/v8/finance/chart/AAPL" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
+		if got := r.UserAgent(); got != DefaultUserAgents[0] {
+			t.Fatalf("User-Agent = %q", got)
+		}
 		if got := r.URL.Query().Get("range"); got != "5d" {
 			t.Fatalf("range = %q", got)
 		}

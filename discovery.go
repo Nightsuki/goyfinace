@@ -64,6 +64,90 @@ type ScreenRequest struct {
 	UserIDType string         `json:"userIdType,omitempty"`
 }
 
+// ScreenerQuery is a composable Yahoo screener query expression.
+type ScreenerQuery struct {
+	Operator string `json:"operator"`
+	Operands []any  `json:"operands"`
+}
+
+// Map converts a query expression into the raw map shape accepted by Screen.
+func (q ScreenerQuery) Map() map[string]any {
+	return map[string]any{"operator": q.Operator, "operands": q.Operands}
+}
+
+// Screener builds a raw Yahoo screener query expression.
+func Screener(operator string, operands ...any) ScreenerQuery {
+	return ScreenerQuery{Operator: operator, Operands: operands}
+}
+
+// Eq builds an equality screener filter.
+func Eq(field string, value any) ScreenerQuery {
+	return Screener("eq", field, value)
+}
+
+// GT builds a greater-than screener filter.
+func GT(field string, value any) ScreenerQuery {
+	return Screener("gt", field, value)
+}
+
+// GTE builds a greater-than-or-equal screener filter.
+func GTE(field string, value any) ScreenerQuery {
+	return Screener("gte", field, value)
+}
+
+// LT builds a less-than screener filter.
+func LT(field string, value any) ScreenerQuery {
+	return Screener("lt", field, value)
+}
+
+// LTE builds a less-than-or-equal screener filter.
+func LTE(field string, value any) ScreenerQuery {
+	return Screener("lte", field, value)
+}
+
+// Between builds a between screener filter.
+func Between(field string, low any, high any) ScreenerQuery {
+	return Screener("btwn", field, low, high)
+}
+
+// And combines screener filters with a logical AND.
+func And(filters ...ScreenerQuery) ScreenerQuery {
+	operands := make([]any, 0, len(filters))
+	for _, filter := range filters {
+		operands = append(operands, filter.Map())
+	}
+	return Screener("and", operands...)
+}
+
+// Or combines screener filters with a logical OR.
+func Or(filters ...ScreenerQuery) ScreenerQuery {
+	operands := make([]any, 0, len(filters))
+	for _, filter := range filters {
+		operands = append(operands, filter.Map())
+	}
+	return Screener("or", operands...)
+}
+
+// EquityQuery builds a Yahoo equity screener query.
+func EquityQuery(filters ...ScreenerQuery) map[string]any {
+	return queryWithQuoteType("EQUITY", filters...)
+}
+
+// FundQuery builds a Yahoo mutual-fund screener query.
+func FundQuery(filters ...ScreenerQuery) map[string]any {
+	return queryWithQuoteType("MUTUALFUND", filters...)
+}
+
+// ETFQuery builds a Yahoo ETF screener query.
+func ETFQuery(filters ...ScreenerQuery) map[string]any {
+	return queryWithQuoteType("ETF", filters...)
+}
+
+func queryWithQuoteType(quoteType string, filters ...ScreenerQuery) map[string]any {
+	all := append([]ScreenerQuery{Eq("quoteType", quoteType)}, filters...)
+	return And(all...).Map()
+}
+
 // Screen runs a custom Yahoo screener query.
 func (c *Client) Screen(ctx context.Context, req ScreenRequest) (map[string]any, error) {
 	if req.Count == 0 && req.Size == 0 {

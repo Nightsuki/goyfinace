@@ -44,6 +44,31 @@ func TestQuoteEndpoint(t *testing.T) {
 	}
 }
 
+func TestTickersQuotes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("symbols"); got != "AAPL,MSFT" {
+			t.Fatalf("symbols = %q", got)
+		}
+		writeJSON(t, w, map[string]any{
+			"quoteResponse": map[string]any{
+				"result": []any{map[string]any{"symbol": "AAPL"}, map[string]any{"symbol": "MSFT"}},
+				"error":  nil,
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := NewClient(server.Client())
+	client.Query1URL = server.URL
+	quotes, err := client.Tickers("aapl msft").Quotes(context.Background())
+	if err != nil {
+		t.Fatalf("Quotes returned error: %v", err)
+	}
+	if len(quotes) != 2 || quotes[0].Symbol != "AAPL" || quotes[1].Symbol != "MSFT" {
+		t.Fatalf("quotes = %+v", quotes)
+	}
+}
+
 func TestNewsEndpoint(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -167,6 +192,9 @@ func TestScreenCalendarAndDomainEndpoints(t *testing.T) {
 			if body.SortField != "ticker" || body.UserIDType != "guid" {
 				t.Fatalf("unexpected screener defaults: %+v", body)
 			}
+			if body.Query != nil && body.Query["operator"] != "and" {
+				t.Fatalf("unexpected query: %+v", body.Query)
+			}
 		case "/v1/finance/visualization":
 			if r.Method != http.MethodPost {
 				t.Fatalf("visualization method = %s", r.Method)
@@ -182,6 +210,10 @@ func TestScreenCalendarAndDomainEndpoints(t *testing.T) {
 			if r.Method != http.MethodGet {
 				t.Fatalf("domain method = %s", r.Method)
 			}
+		case "/v6/finance/quote/marketSummary":
+			if r.Method != http.MethodGet {
+				t.Fatalf("market summary method = %s", r.Method)
+			}
 		default:
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
@@ -191,7 +223,7 @@ func TestScreenCalendarAndDomainEndpoints(t *testing.T) {
 
 	client := NewClient(server.Client())
 	client.Query1URL = server.URL
-	if _, err := client.Screen(context.Background(), ScreenRequest{}); err != nil {
+	if _, err := client.Screen(context.Background(), ScreenRequest{Query: EquityQuery(GT("intradaymarketcap", 1000))}); err != nil {
 		t.Fatalf("Screen returned error: %v", err)
 	}
 	if _, err := client.CalendarVisualization(context.Background(), CalendarQuery{}); err != nil {
@@ -205,6 +237,27 @@ func TestScreenCalendarAndDomainEndpoints(t *testing.T) {
 	}
 	if _, err := client.Industry(context.Background(), "software"); err != nil {
 		t.Fatalf("Industry returned error: %v", err)
+	}
+	if _, err := client.Market("us").Summary(context.Background()); err != nil {
+		t.Fatalf("Market Summary returned error: %v", err)
+	}
+	if _, err := client.Calendars().Earnings(context.Background(), 5, "aapl"); err != nil {
+		t.Fatalf("Calendars Earnings returned error: %v", err)
+	}
+}
+
+func TestScreenerQueryBuilders(t *testing.T) {
+	query := EquityQuery(GTE("intradaymarketcap", 1000), Between("eodvolume", 10, 20))
+	if query["operator"] != "and" {
+		t.Fatalf("operator = %#v", query["operator"])
+	}
+	operands, ok := query["operands"].([]any)
+	if !ok || len(operands) != 3 {
+		t.Fatalf("operands = %#v", query["operands"])
+	}
+	first, ok := operands[0].(map[string]any)
+	if !ok || first["operator"] != "eq" {
+		t.Fatalf("first operand = %#v", operands[0])
 	}
 }
 
@@ -240,6 +293,20 @@ func TestQuoteSummaryWrappersUseExpectedModules(t *testing.T) {
 		{"Analysis", func() (map[string]any, error) { return client.Analysis(ctx, "AAPL") }, "earningsTrend"},
 		{"AnalystPriceTargets", func() (map[string]any, error) { return client.AnalystPriceTargets(ctx, "AAPL") }, "financialData"},
 		{"FundProfile", func() (map[string]any, error) { return client.FundProfile(ctx, "AAPL") }, "fundProfile"},
+		{"Earnings", func() (map[string]any, error) { return client.Earnings(ctx, "AAPL") }, "earningsHistory"},
+		{"EarningsEstimate", func() (map[string]any, error) { return client.EarningsEstimate(ctx, "AAPL") }, "earningsTrend"},
+		{"RevenueEstimate", func() (map[string]any, error) { return client.RevenueEstimate(ctx, "AAPL") }, "earningsTrend"},
+		{"EarningsHistory", func() (map[string]any, error) { return client.EarningsHistory(ctx, "AAPL") }, "earningsHistory"},
+		{"EPSRevisions", func() (map[string]any, error) { return client.EPSRevisions(ctx, "AAPL") }, "earningsTrend"},
+		{"EPSTrend", func() (map[string]any, error) { return client.EPSTrend(ctx, "AAPL") }, "earningsTrend"},
+		{"GrowthEstimates", func() (map[string]any, error) { return client.GrowthEstimates(ctx, "AAPL") }, "sectorTrend"},
+		{"RecommendationsSummary", func() (map[string]any, error) { return client.RecommendationsSummary(ctx, "AAPL") }, "recommendationTrend"},
+		{"MajorHolders", func() (map[string]any, error) { return client.MajorHolders(ctx, "AAPL") }, "majorHoldersBreakdown"},
+		{"InstitutionalHolders", func() (map[string]any, error) { return client.InstitutionalHolders(ctx, "AAPL") }, "institutionOwnership"},
+		{"MutualFundHolders", func() (map[string]any, error) { return client.MutualFundHolders(ctx, "AAPL") }, "fundOwnership"},
+		{"InsiderPurchases", func() (map[string]any, error) { return client.InsiderPurchases(ctx, "AAPL") }, "netSharePurchaseActivity"},
+		{"InsiderTransactions", func() (map[string]any, error) { return client.InsiderTransactions(ctx, "AAPL") }, "insiderTransactions"},
+		{"InsiderRosterHolders", func() (map[string]any, error) { return client.InsiderRosterHolders(ctx, "AAPL") }, "insiderHolders"},
 	}
 	for i, check := range checks {
 		if _, err := check.call(); err != nil {

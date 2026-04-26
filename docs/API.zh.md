@@ -95,7 +95,7 @@ type Client struct {
 | `Query2URL` | Yahoo `query2.finance.yahoo.com` 的基础地址。测试或私有代理可覆盖。 |
 | `RootURL` | Yahoo Finance 前端 JSON 端点的基础地址，例如新闻接口。 |
 | `ISINURL` | 外部 best-effort ISIN suggestion 端点。Yahoo 没有稳定的 ISIN lookup，因此该地址与 Yahoo 端点分离。 |
-| `UserAgent` | 请求头中的 User-Agent。为空时使用包默认值。 |
+| `UserAgent` | 请求头中的 User-Agent。为空时使用 `DefaultUserAgents` 中的默认浏览器 UA。 |
 
 `Client` 可以复用。建议在应用初始化时创建一个客户端，在业务代码中共享。
 
@@ -718,6 +718,77 @@ type YahooError struct {
 
 另外，HTTP 非 2xx 响应会返回包含状态码和响应片段的普通 `error`。
 
+## 其他 yfinance helper
+
+### 多标的 Tickers
+
+```go
+tickers := client.Tickers("AAPL MSFT")
+quotes, err := tickers.Quotes(ctx)
+downloads := tickers.Download(ctx, yfinance.HistoryParams{Period: yfinance.Period1Mo})
+```
+
+`Tickers` 保存标准化后的 symbols，并委托 `Quote` 和 `Download` 执行。
+
+### 筛选器 query builder
+
+```go
+query := yfinance.EquityQuery(
+	yfinance.GTE("intradaymarketcap", 1_000_000_000),
+	yfinance.Between("eodvolume", 1_000_000, 10_000_000),
+)
+result, err := client.Screen(ctx, yfinance.ScreenRequest{Query: query, Size: 50})
+```
+
+`EquityQuery`、`FundQuery`、`ETFQuery` 会生成 Yahoo screener query map。底层构造器包括 `Eq`、`GT`、`GTE`、`LT`、`LTE`、`Between`、`And`、`Or`、`Screener`。
+
+### estimate、holder 和 insider helper
+
+以下 helper 是 quoteSummary 的轻量封装，返回 Yahoo 原始模块 payload：
+
+```go
+client.EarningsEstimate(ctx, "AAPL")
+client.RevenueEstimate(ctx, "AAPL")
+client.EarningsHistory(ctx, "AAPL")
+client.EPSRevisions(ctx, "AAPL")
+client.EPSTrend(ctx, "AAPL")
+client.GrowthEstimates(ctx, "AAPL")
+client.RecommendationsSummary(ctx, "AAPL")
+client.MajorHolders(ctx, "AAPL")
+client.InstitutionalHolders(ctx, "AAPL")
+client.MutualFundHolders(ctx, "AAPL")
+client.InsiderPurchases(ctx, "AAPL")
+client.InsiderTransactions(ctx, "AAPL")
+client.InsiderRosterHolders(ctx, "AAPL")
+```
+
+### Market 与 Calendars
+
+```go
+summary, err := client.Market("us").Summary(ctx)
+status, err := client.Market("us").Status(ctx)
+earnings, err := client.Calendars().Earnings(ctx, 25)
+```
+
+### WebSocket 流式行情
+
+```go
+ws := yfinance.NewWebSocket("")
+defer ws.Close()
+
+ctx, cancel := context.WithCancel(context.Background())
+defer cancel()
+
+if err := ws.Subscribe(ctx, "AAPL", "MSFT"); err != nil {
+	return err
+}
+err := ws.Listen(ctx, func(msg yfinance.StreamMessage) {
+	fmt.Println(msg.ID, msg.Price)
+})
+```
+
+`NewAsyncWebSocket` 和 `Client.AsyncWebSocket` 返回同一个由 context 驱动的 Go client。Yahoo 推送帧会解码为 `StreamMessage`，原始值保留在 `Raw` 中。
+
 ## Context 与超时
 
 所有网络方法都接收 `context.Context`，推荐在业务层设置超时：
@@ -757,7 +828,7 @@ client.Query2URL = "http://127.0.0.1:8080"
 - 可选 DataFrame 支持位于 `github.com/Nightsuki/goyfinace/adapter/gota`，但它不是完整 pandas 克隆。
 - `Info` 返回扁平化 map，但不保证字段集合固定。
 - financial、screener、calendar、domain、analysis 等接口保留 Yahoo 原始模块/端点结构，调用方可以按需要建模。
-- Python 专属 scraping、`repair` 启发式修复、WebSocket streaming、pandas index/MultiIndex 行为未在根包中完整复刻。
+- Python 专属 scraping、`repair` 启发式修复、完整 pandas index/MultiIndex 行为以及 Python `asyncio` API 不在根包中复刻。
 
 ## yfinance 兼容功能面
 
@@ -768,9 +839,11 @@ client.Query2URL = "http://127.0.0.1:8080"
 - 分析师数据：`Analysis`、`AnalystPriceTargets`、`UpgradesDowngrades`、`Recommendations`。
 - 基金和持仓：`FundProfile`、`Holders`。
 - 财务报表和股本：`FundamentalsTimeseries`、`IncomeStatement`、`BalanceSheet`、`CashFlow`、`SharesFull`。
-- 发现和筛选器：`Lookup`、`LookupISIN`、`Search`、`Screen`、`PredefinedScreen`。
-- 市场和 domain 数据：`MarketSummary`、`MarketStatus`、`Sector`、`Industry`。
+- 估值、持仓和 insider：`EarningsEstimate`、`RevenueEstimate`、`EarningsHistory`、`EPSRevisions`、`EPSTrend`、`GrowthEstimates`、`RecommendationsSummary`、`MajorHolders`、`InstitutionalHolders`、`MutualFundHolders`、`InsiderPurchases`、`InsiderTransactions`、`InsiderRosterHolders`。
+- 发现和筛选器：`Lookup`、`LookupISIN`、`Search`、`Screen`、`PredefinedScreen`、`EquityQuery`、`FundQuery`、`ETFQuery`。
+- 市场和 domain 数据：`Market`、`MarketSummary`、`MarketStatus`、`Sector`、`Industry`。
 - 日历和新闻：`CalendarVisualization`、`EarningsDates`、`News`。
+- 多标的和流式行情：`Tickers`、`WebSocket`、`AsyncWebSocket`。
 
 当 Yahoo schema 较宽或不稳定时，这些方法会返回原始 `map[string]any` 或简单 records。需要表格表达时，可使用 `adapter/gota` 的 `QuoteSummary`、`KeyValues`、`Records`、`Actions`、`Timeseries` 等 helper。
 
@@ -780,10 +853,12 @@ client.Query2URL = "http://127.0.0.1:8080"
 | --- | --- |
 | `yf.Ticker("AAPL").history(...)` | `client.Ticker("AAPL").History(ctx, params)` |
 | `yf.download(["AAPL", "MSFT"])` | `client.Download(ctx, []string{"AAPL", "MSFT"}, params)` |
+| `yf.Tickers("AAPL MSFT")` | `client.Tickers("AAPL MSFT")` |
 | `ticker.info` | `ticker.Info(ctx)` |
 | `ticker.fast_info` | `ticker.FastInfo(ctx)` |
 | `ticker.option_chain(...)` | `ticker.Options(ctx, expiration)` |
 | `ticker.financials` | `ticker.Financials(ctx)` |
+| `yf.WebSocket(...)` | `yfinance.NewWebSocket(url)` |
 
 ## 发布与版本
 
@@ -796,7 +871,7 @@ github.com/Nightsuki/goyfinace
 安装指定版本：
 
 ```sh
-go get github.com/Nightsuki/goyfinace@v0.3.0
+go get github.com/Nightsuki/goyfinace@v0.4.0
 ```
 
 Go 文档发布后可在 pkg.go.dev 查看：

@@ -93,7 +93,7 @@ type Client struct {
 | `Query2URL` | Base URL for `query2.finance.yahoo.com`. Override for tests or internal proxies. |
 | `RootURL` | Base URL for Yahoo Finance frontend JSON endpoints such as news. |
 | `ISINURL` | External best-effort ISIN suggestion endpoint. Keep separate from Yahoo endpoints because Yahoo does not expose stable ISIN lookup. |
-| `UserAgent` | User-Agent sent on each request. Empty uses the package default. |
+| `UserAgent` | User-Agent sent on each request. Empty uses the package default browser user-agent from `DefaultUserAgents`. |
 
 `Client` can be reused across requests. In most applications, create one client at startup and share it.
 
@@ -697,6 +697,77 @@ type YahooError struct {
 
 Non-2xx HTTP responses return ordinary errors containing the status code and a response snippet.
 
+## Additional yfinance Helpers
+
+### Multi-Symbol Tickers
+
+```go
+tickers := client.Tickers("AAPL MSFT")
+quotes, err := tickers.Quotes(ctx)
+downloads := tickers.Download(ctx, yfinance.HistoryParams{Period: yfinance.Period1Mo})
+```
+
+`Tickers` stores normalized symbols and delegates to `Quote` and `Download`.
+
+### Screener Query Builders
+
+```go
+query := yfinance.EquityQuery(
+	yfinance.GTE("intradaymarketcap", 1_000_000_000),
+	yfinance.Between("eodvolume", 1_000_000, 10_000_000),
+)
+result, err := client.Screen(ctx, yfinance.ScreenRequest{Query: query, Size: 50})
+```
+
+`EquityQuery`, `FundQuery`, and `ETFQuery` create Yahoo screener query maps. Lower-level builders include `Eq`, `GT`, `GTE`, `LT`, `LTE`, `Between`, `And`, `Or`, and `Screener`.
+
+### Estimate, Holder, and Insider Helpers
+
+The following helpers are thin quoteSummary wrappers and return Yahoo's raw module payloads:
+
+```go
+client.EarningsEstimate(ctx, "AAPL")
+client.RevenueEstimate(ctx, "AAPL")
+client.EarningsHistory(ctx, "AAPL")
+client.EPSRevisions(ctx, "AAPL")
+client.EPSTrend(ctx, "AAPL")
+client.GrowthEstimates(ctx, "AAPL")
+client.RecommendationsSummary(ctx, "AAPL")
+client.MajorHolders(ctx, "AAPL")
+client.InstitutionalHolders(ctx, "AAPL")
+client.MutualFundHolders(ctx, "AAPL")
+client.InsiderPurchases(ctx, "AAPL")
+client.InsiderTransactions(ctx, "AAPL")
+client.InsiderRosterHolders(ctx, "AAPL")
+```
+
+### Market and Calendars
+
+```go
+summary, err := client.Market("us").Summary(ctx)
+status, err := client.Market("us").Status(ctx)
+earnings, err := client.Calendars().Earnings(ctx, 25)
+```
+
+### WebSocket Streaming
+
+```go
+ws := yfinance.NewWebSocket("")
+defer ws.Close()
+
+ctx, cancel := context.WithCancel(context.Background())
+defer cancel()
+
+if err := ws.Subscribe(ctx, "AAPL", "MSFT"); err != nil {
+	return err
+}
+err := ws.Listen(ctx, func(msg yfinance.StreamMessage) {
+	fmt.Println(msg.ID, msg.Price)
+})
+```
+
+`NewAsyncWebSocket` and `Client.AsyncWebSocket` return the same context-driven Go client. Incoming Yahoo frames are decoded into `StreamMessage`; the original values remain available in `Raw`.
+
 ## Context and Timeouts
 
 All network methods accept `context.Context`. Prefer setting a business-level timeout:
@@ -736,7 +807,7 @@ Main differences:
 - Optional DataFrame support is available through `github.com/Nightsuki/goyfinace/adapter/gota`; it is not a full pandas clone.
 - `Info` returns a flattened map but does not promise a fixed field set.
 - Financial, screener, calendar, domain, and analysis methods preserve Yahoo's raw module/endpoint structure for caller-owned modeling.
-- Python-specific scraping, `repair` heuristics, WebSocket streaming, and pandas index/MultiIndex behavior are not fully implemented in the root package.
+- Python-specific scraping, `repair` heuristics, full pandas index/MultiIndex behavior, and Python `asyncio` APIs are not replicated in the root package.
 
 ## yfinance Compatibility Surface
 
@@ -747,9 +818,11 @@ Beyond the core APIs above, the package exposes Go-native equivalents for the ma
 - Analyst data: `Analysis`, `AnalystPriceTargets`, `UpgradesDowngrades`, `Recommendations`.
 - Funds and holders: `FundProfile`, `Holders`.
 - Financial statements and shares: `FundamentalsTimeseries`, `IncomeStatement`, `BalanceSheet`, `CashFlow`, `SharesFull`.
-- Discovery and screeners: `Lookup`, `LookupISIN`, `Search`, `Screen`, `PredefinedScreen`.
-- Market/domain data: `MarketSummary`, `MarketStatus`, `Sector`, `Industry`.
+- Estimates, holders, and insiders: `EarningsEstimate`, `RevenueEstimate`, `EarningsHistory`, `EPSRevisions`, `EPSTrend`, `GrowthEstimates`, `RecommendationsSummary`, `MajorHolders`, `InstitutionalHolders`, `MutualFundHolders`, `InsiderPurchases`, `InsiderTransactions`, `InsiderRosterHolders`.
+- Discovery and screeners: `Lookup`, `LookupISIN`, `Search`, `Screen`, `PredefinedScreen`, `EquityQuery`, `FundQuery`, `ETFQuery`.
+- Market/domain data: `Market`, `MarketSummary`, `MarketStatus`, `Sector`, `Industry`.
 - Calendars/news: `CalendarVisualization`, `EarningsDates`, `News`.
+- Multi-symbol and streaming helpers: `Tickers`, `WebSocket`, `AsyncWebSocket`.
 
 These methods intentionally return raw `map[string]any` payloads or simple records when Yahoo's schema is broad or unstable. Use `adapter/gota` helpers such as `QuoteSummary`, `KeyValues`, `Records`, `Actions`, and `Timeseries` when you want a table representation.
 
@@ -759,10 +832,12 @@ Migration examples:
 | --- | --- |
 | `yf.Ticker("AAPL").history(...)` | `client.Ticker("AAPL").History(ctx, params)` |
 | `yf.download(["AAPL", "MSFT"])` | `client.Download(ctx, []string{"AAPL", "MSFT"}, params)` |
+| `yf.Tickers("AAPL MSFT")` | `client.Tickers("AAPL MSFT")` |
 | `ticker.info` | `ticker.Info(ctx)` |
 | `ticker.fast_info` | `ticker.FastInfo(ctx)` |
 | `ticker.option_chain(...)` | `ticker.Options(ctx, expiration)` |
 | `ticker.financials` | `ticker.Financials(ctx)` |
+| `yf.WebSocket(...)` | `yfinance.NewWebSocket(url)` |
 
 ## Versioning
 
@@ -775,7 +850,7 @@ github.com/Nightsuki/goyfinace
 Install a specific version:
 
 ```sh
-go get github.com/Nightsuki/goyfinace@v0.3.0
+go get github.com/Nightsuki/goyfinace@v0.4.0
 ```
 
 Go package documentation is available after pkg.go.dev indexes the module:
