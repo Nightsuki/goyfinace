@@ -17,13 +17,14 @@ import (
 )
 
 const (
-	defaultQuery1URL = "https://query1.finance.yahoo.com"
-	defaultQuery2URL = "https://query2.finance.yahoo.com"
-	defaultRootURL   = "https://finance.yahoo.com"
-	defaultISINURL   = "https://markets.businessinsider.com"
-	defaultStreamURL = "wss://streamer.finance.yahoo.com/?version=2"
-	defaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
-	maxTextBodyBytes = 2 << 20
+	defaultQuery1URL       = "https://query1.finance.yahoo.com"
+	defaultQuery2URL       = "https://query2.finance.yahoo.com"
+	defaultRootURL         = "https://finance.yahoo.com"
+	defaultISINURL         = "https://markets.businessinsider.com"
+	defaultStreamURL       = "wss://streamer.finance.yahoo.com/?version=2"
+	defaultCookiePrimeURL  = "https://fc.yahoo.com"
+	defaultUserAgent       = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+	maxTextBodyBytes       = 2 << 20
 )
 
 // DefaultUserAgents mirrors the browser user-agent set used by yfinance.
@@ -52,6 +53,12 @@ type Client struct {
 	// ISINURL is used only by the best-effort ISIN helper. Yahoo does not
 	// expose a stable ticker-to-ISIN endpoint, so this is intentionally separate.
 	ISINURL string
+	// CookiePrimeURL is the small Yahoo endpoint visited only to set the
+	// A1/A3 session cookies before fetching a crumb. yfinance's Python
+	// implementation uses https://fc.yahoo.com (a 404-returning endpoint
+	// that still sets cookies); the full https://finance.yahoo.com/ home
+	// page is multiple megabytes and is the wrong choice for priming.
+	CookiePrimeURL string
 	// UserAgent is sent on every request. Leave empty for the package default.
 	UserAgent string
 	// Crumb is the bot-detection token Yahoo requires on quoteSummary and
@@ -117,13 +124,14 @@ func NewClient(httpClient *http.Client) *Client {
 		httpClient.Jar = jar
 	}
 	return &Client{
-		HTTPClient: httpClient,
-		Query1URL:  defaultQuery1URL,
-		Query2URL:  defaultQuery2URL,
-		RootURL:    defaultRootURL,
-		ISINURL:    defaultISINURL,
-		UserAgent:  defaultUserAgent,
-		auth:       &authState{},
+		HTTPClient:     httpClient,
+		Query1URL:      defaultQuery1URL,
+		Query2URL:      defaultQuery2URL,
+		RootURL:        defaultRootURL,
+		ISINURL:        defaultISINURL,
+		CookiePrimeURL: defaultCookiePrimeURL,
+		UserAgent:      defaultUserAgent,
+		auth:           &authState{},
 	}
 }
 
@@ -137,20 +145,21 @@ func (c *Client) cloneWithDefaults() *Client {
 		return NewClient(nil)
 	}
 	cp := Client{
-		HTTPClient:   c.HTTPClient,
-		Query1URL:    c.Query1URL,
-		Query2URL:    c.Query2URL,
-		RootURL:      c.RootURL,
-		ISINURL:      c.ISINURL,
-		UserAgent:    c.UserAgent,
-		Crumb:        c.Crumb,
-		Logger:       c.Logger,
-		Retries:      c.Retries,
-		RetryBackoff: c.RetryBackoff,
-		Limiter:      c.Limiter,
-		Cache:        c.Cache,
-		CacheTTL:     c.CacheTTL,
-		auth:         c.auth,
+		HTTPClient:     c.HTTPClient,
+		Query1URL:      c.Query1URL,
+		Query2URL:      c.Query2URL,
+		RootURL:        c.RootURL,
+		ISINURL:        c.ISINURL,
+		CookiePrimeURL: c.CookiePrimeURL,
+		UserAgent:      c.UserAgent,
+		Crumb:          c.Crumb,
+		Logger:         c.Logger,
+		Retries:        c.Retries,
+		RetryBackoff:   c.RetryBackoff,
+		Limiter:        c.Limiter,
+		Cache:          c.Cache,
+		CacheTTL:       c.CacheTTL,
+		auth:           c.auth,
 	}
 	if cp.HTTPClient == nil {
 		jar, _ := cookiejar.New(nil)
@@ -170,6 +179,9 @@ func (c *Client) cloneWithDefaults() *Client {
 	}
 	if cp.ISINURL == "" {
 		cp.ISINURL = defaultISINURL
+	}
+	if cp.CookiePrimeURL == "" {
+		cp.CookiePrimeURL = defaultCookiePrimeURL
 	}
 	if cp.UserAgent == "" {
 		cp.UserAgent = defaultUserAgent
@@ -236,37 +248,41 @@ func (c *Client) postJSON(ctx context.Context, baseURL, path string, query url.V
 
 func (c *Client) doJSON(ctx context.Context, method, baseURL, path string, query url.Values, body any, out any) error {
 	c = c.cloneWithDefaults()
-	if requestNeedsCrumb(baseURL, path) {
-		if err := c.EnsureCrumb(ctx); err != nil {
-			return err
-		}
-		query = appendCrumb(query, c.Crumb)
-	}
-	endpoint, err := joinURL(baseURL, path, query)
-	if err != nil {
-		return err
-	}
 	cacheable := method == http.MethodGet && c.Cache != nil
-	if cacheable {
-		if cached, ok := c.Cache.Get(endpoint); ok {
-			if c.Logger != nil {
-				c.Logger.Debug("yfinance cache hit",
-					slog.String("method", method),
-					slog.String("url", endpoint))
-			}
-			dec := json.NewDecoder(bytes.NewReader(cached))
-			dec.UseNumber()
-			return dec.Decode(out)
-		}
-	}
 	var data []byte
 	if body != nil {
+		var err error
 		data, err = json.Marshal(body)
 		if err != nil {
 			return err
 		}
 	}
 	return c.withRetry(ctx, method, path, func() error {
+		// Re-evaluate crumb each attempt so a refreshed crumb after 401 is
+		// applied to the retry. The endpoint is rebuilt accordingly.
+		q := query
+		if requestNeedsCrumb(baseURL, path) {
+			if err := c.EnsureCrumb(ctx); err != nil {
+				return err
+			}
+			q = appendCrumb(q, c.Crumb)
+		}
+		endpoint, err := joinURL(baseURL, path, q)
+		if err != nil {
+			return err
+		}
+		if cacheable {
+			if cached, ok := c.Cache.Get(endpoint); ok {
+				if c.Logger != nil {
+					c.Logger.Debug("yfinance cache hit",
+						slog.String("method", method),
+						slog.String("url", endpoint))
+				}
+				dec := json.NewDecoder(bytes.NewReader(cached))
+				dec.UseNumber()
+				return dec.Decode(out)
+			}
+		}
 		if err := c.gate(ctx); err != nil {
 			return err
 		}
@@ -294,8 +310,24 @@ func (c *Client) doJSON(ctx context.Context, method, baseURL, path string, query
 			io.Copy(io.Discard, resp.Body)
 			return ErrRateLimited
 		}
+		// A 401 on a crumb-protected path means the cached crumb expired;
+		// drop it so the next attempt re-authenticates from scratch.
+		if resp.StatusCode == http.StatusUnauthorized && requestNeedsCrumb(baseURL, path) {
+			io.Copy(io.Discard, resp.Body)
+			c.invalidateCrumb()
+			return errCrumbExpired
+		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			payload, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+			// Yahoo returns 404 with "No fundamentals data found" when an
+			// otherwise-valid request lands on a symbol/module combo that
+			// has no data (e.g. ESG scores for many large caps). yfinance
+			// surfaces this as "no data" rather than an error; mirror that
+			// by returning ErrNoResult.
+			if resp.StatusCode == http.StatusNotFound &&
+				strings.Contains(string(payload), "No fundamentals data found") {
+				return ErrNoResult
+			}
 			return &httpError{
 				method:  method,
 				path:    path,
@@ -365,10 +397,19 @@ func (c *Client) withRetry(ctx context.Context, method, path string, attempt fun
 		backoff = 250 * time.Millisecond
 	}
 	var err error
+	crumbRefreshed := false
 	for i := 0; i < maxAttempts; i++ {
 		err = attempt()
 		if err == nil {
 			return nil
+		}
+		// Crumb expiry gets one free re-auth retry that does not consume a
+		// Retries slot — it's an authentication refresh, not a transient
+		// failure.
+		if errors.Is(err, errCrumbExpired) && !crumbRefreshed {
+			crumbRefreshed = true
+			i--
+			continue
 		}
 		if !isRetryable(err) || i == maxAttempts-1 {
 			return err
@@ -389,6 +430,20 @@ func (c *Client) withRetry(ctx context.Context, method, path string, attempt fun
 		}
 	}
 	return err
+}
+
+// errCrumbExpired signals that a crumb-protected endpoint returned 401 and
+// the cached crumb has been invalidated. withRetry treats this as retryable
+// so the next attempt re-runs Authenticate transparently.
+var errCrumbExpired = errors.New("yfinance: crumb expired, re-authenticated")
+
+func (c *Client) invalidateCrumb() {
+	c.Crumb = ""
+	if c.auth != nil {
+		c.auth.mu.Lock()
+		c.auth.crumb = ""
+		c.auth.mu.Unlock()
+	}
 }
 
 func isRetryable(err error) bool {

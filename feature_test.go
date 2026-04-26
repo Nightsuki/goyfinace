@@ -796,6 +796,7 @@ func TestAuthenticateSetsCrumbFromGetCrumb(t *testing.T) {
 	client := NewClient(nil)
 	client.RootURL = server.URL
 	client.Query2URL = server.URL
+	client.CookiePrimeURL = server.URL
 	client.HTTPClient = server.Client()
 	if client.HTTPClient.Jar == nil {
 		jar, _ := cookiejar.New(nil)
@@ -1084,6 +1085,41 @@ func TestMemoryCacheSavesAndServesGetJSON(t *testing.T) {
 	}
 	if hits != 1 {
 		t.Fatalf("server hits = %d, want 1 with cache", hits)
+	}
+}
+
+func TestAuthenticateHandlesLargeBodyAnd404OnPrime(t *testing.T) {
+	// Regression for v0.5.0 bug: when CookiePrimeURL responds with a body
+	// larger than the 2 MiB cap (or with 404 like real fc.yahoo.com), auth
+	// must still succeed because cookies are set from response headers.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			http.SetCookie(w, &http.Cookie{Name: "A1", Value: "test"})
+			w.WriteHeader(http.StatusNotFound)
+			big := make([]byte, 3*1024*1024) // 3 MiB > maxTextBodyBytes
+			for i := range big {
+				big[i] = 'x'
+			}
+			w.Write(big)
+		case "/v1/test/getcrumb":
+			w.Write([]byte("CRUMB-AFTER-LARGE-PRIME"))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(nil)
+	client.HTTPClient = server.Client()
+	client.CookiePrimeURL = server.URL
+	client.Query2URL = server.URL
+
+	if err := client.Authenticate(context.Background()); err != nil {
+		t.Fatalf("Authenticate failed on large body / 404 prime: %v", err)
+	}
+	if client.Crumb != "CRUMB-AFTER-LARGE-PRIME" {
+		t.Fatalf("Crumb = %q", client.Crumb)
 	}
 }
 
