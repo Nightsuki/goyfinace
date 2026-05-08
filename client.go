@@ -473,11 +473,15 @@ func joinURL(baseURL, path string, query url.Values) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	p, err := url.JoinPath(u.Path, path)
-	if err != nil {
-		return "", err
-	}
-	u.Path = p
+	// Use the *URL method* JoinPath (not the package func url.JoinPath) so
+	// the resolved path correctly populates both u.Path (decoded) and
+	// u.RawPath (encoded). The package func returns an already-encoded
+	// string that, when assigned back to u.Path, gets double-encoded by
+	// u.String() — turning "%5E" (^) into "%255E" and breaking any
+	// symbol that contains a percent-escapable character (e.g. ^VIX,
+	// ^TNX, ^GSPC indices, BRK.B class shares, foreign tickers with
+	// non-ASCII letters).
+	u = u.JoinPath(path)
 	u.RawQuery = query.Encode()
 	return u.String(), nil
 }
